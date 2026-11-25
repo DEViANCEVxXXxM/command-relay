@@ -770,3 +770,81 @@ class InstallRehearsalTests(unittest.TestCase):
             with self.assertRaisesRegex(u.UpdateError, 'prepare or clean'):
                 u.rehearse_installation(self.old, self.new)
             replace_file.assert_not_called()
+
+
+class RecoveryRehearsalTests(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        import tempfile
+        fixture = InstallPlanTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.old = fixture.old
+        self.new = fixture.package(u.VERSION, '4.10.0', dict(fixture.new_files, **{'README.md': b'new docs'}))
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.plan = u._prepare_recovery_rehearsal(self.base, self.old, self.new)
+        self.original, self.target, _ = u._recovery_packages(self.old, self.new)
+
+    def apply(self, names):
+        for name in names:
+            u._replace_rehearsal_file(self.base/'incoming'/name, self.base/'portable'/name,
+                                      self.original[name], self.target[name])
+
+    def test_simulated_interruption_and_retry(self):
+        result = u.rehearse_interrupted_installation(self.old, self.new)
+        self.assertTrue(result.rollback_verified)
+        self.assertEqual(result.replaced, ('README.md',))
+
+    def test_before_first_replacement(self):
+        self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ())
+
+    def test_after_all_replacements(self):
+        self.apply(self.plan.replace)
+        (self.base/'portable'/'settings.json').write_bytes(b'user data')
+        self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), self.plan.replace)
+        self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ())
+        self.assertEqual((self.base/'portable'/'settings.json').read_bytes(), b'user data')
+
+    def test_unknown_file_denied_before_any_restore(self):
+        self.apply(self.plan.replace)
+        (self.base/'portable'/'Start.pyw').write_bytes(b'unknown')
+        with patch.object(u, '_replace_rehearsal_file') as replace_file:
+            with self.assertRaisesRegex(u.UpdateError, 'Unknown recovery'):
+                u._recover_rehearsal(self.base, self.old, self.new)
+            replace_file.assert_not_called()
+
+    def test_corrupt_backup_denied_before_any_restore(self):
+        self.apply(self.plan.replace)
+        (self.base/'backup'/'Start.pyw').write_bytes(b'bad')
+        with patch.object(u, '_replace_rehearsal_file') as replace_file:
+            with self.assertRaisesRegex(u.UpdateError, 'backup differs'):
+                u._recover_rehearsal(self.base, self.old, self.new)
+            replace_file.assert_not_called()
+
+    def test_tampered_intent_denied(self):
+        self.apply(self.plan.replace[:1])
+        (self.base/'intent.json').write_bytes(b'{}')
+        with self.assertRaisesRegex(u.UpdateError, 'intent differs'):
+            u._recover_rehearsal(self.base, self.old, self.new)
+        self.assertEqual((self.base/'portable'/'README.md').read_bytes(), b'new docs')
+
+    def test_invalid_signature_denied(self):
+        from dataclasses import replace
+        with patch.object(u, '_read_recovery_file') as read:
+            with self.assertRaises(u.UpdateError):
+                u._recover_rehearsal(self.base, self.old, replace(self.new, signature=b'x'*64))
+            read.assert_not_called()
+
+    def test_interruption_during_rollback_can_retry(self):
+        self.apply(self.plan.replace)
+        original = u._replace_rehearsal_file
+        def interrupt(source, destination, expected, replacement):
+            original(source, destination, expected, replacement)
+            raise OSError('simulated interruption after restoration')
+        with patch.object(u, '_replace_rehearsal_file', side_effect=interrupt):
+            with self.assertRaisesRegex(u.UpdateError, 'Recovery interrupted'):
+                u._recover_rehearsal(self.base, self.old, self.new)
+        self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ('README.md',))
+        self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ())
