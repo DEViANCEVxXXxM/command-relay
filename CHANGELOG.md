@@ -1,5 +1,18 @@
 # Changelog
 
+## 4.1.0 — Workflow Intelligence
+
+- Added bounded history lookup and explicit confirmation before rerunning a matching task.
+- Extended heuristic Task Inspector coverage for indirect Git, GitHub CLI and process operations.
+- Added optional GitHub PR manager with background queries, CI status, explicit SHA-bound squash merge and protected JSON export.
+- Added task-level CI waiting and verified squash merge for reviewed tasks; importing a task never starts execution.
+- Preserved standalone GitHub Actions secret-reference expressions in protected text while retaining best-effort secret masking.
+- Documented safe retry and partial failure recovery; expanded session handoff with current project context and continuation hints.
+- Improved workbench keyboard focus, accessible control names, step navigation and discoverability of report copy modes.
+- Preserved task-v1, result-v1 and session-v1 compatibility, startup risk acknowledgement and local data layout.
+- Validated 157 regression tests, extended Windows Qt smoke tests and a repeatable 37-file portable build before the version bump.
+- GitHub CLI remains optional. Automatic update installation, expanded localization, permission settings and parallel execution are future work.
+
 ## 4.0.3 — first public release
 
 - Moved runtime modules into `command_relay/` with package-relative imports and a module entry point.

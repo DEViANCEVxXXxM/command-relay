@@ -9,7 +9,7 @@ body:
     id: version
     attributes:
       label: Command Relay version
-      placeholder: '4.0.3'
+      placeholder: '4.1.0'
     validations:
       required: true
   - type: input
