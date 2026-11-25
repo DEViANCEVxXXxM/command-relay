@@ -1298,3 +1298,99 @@ class PendingTransactionTests(unittest.TestCase):
         with self.assertRaises(u.RecoveryRequired):
             self.apply()
         self.assert_tree(self.new_files)
+
+
+class TransactionFinalizationTests(unittest.TestCase):
+    def setUp(self):
+        fixture = PendingTransactionTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.f = fixture
+        self.root = fixture.root
+        self.marker = fixture.marker
+
+    def finalize(self, outcome='commit'):
+        return u._finalize_pending_update(self.root, self.f.f.old, self.f.target, outcome=outcome)
+
+    def assert_gate(self):
+        with self.assertRaises(u.RecoveryRequired):
+            with u.startup_installation_guard(self.root):
+                self.fail('unverified tree allowed startup')
+
+    def test_commit_archives_evidence_and_releases_gate(self):
+        self.f.apply()
+        journal = (self.marker / 'intent.json').read_bytes()
+        archive = self.finalize()
+        self.assertEqual(archive.parent.parent, self.root.parent)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual((archive / 'intent.json').read_bytes(), journal)
+        self.assertEqual((archive / 'backup' / 'README.md').read_bytes(), self.f.f.files['README.md'])
+        self.f.assert_tree(self.f.new_files)
+        with u.startup_installation_guard(self.root):
+            pass
+
+    def test_rollback_archives_evidence_and_releases_gate(self):
+        self.f.apply()
+        self.f.recover()
+        archive = self.finalize('rollback')
+        self.assertTrue((archive / 'intent.json').is_file())
+        self.assertFalse(self.marker.exists())
+        self.f.assert_tree(self.f.f.files)
+        with u.startup_installation_guard(self.root):
+            pass
+
+    def test_wrong_outcome_denied(self):
+        self.f.apply()
+        with self.assertRaisesRegex(u.UpdateError, 'tree differs'):
+            self.finalize('rollback')
+        self.assert_gate()
+        self.f.assert_tree(self.f.new_files)
+
+    def test_mixed_tree_denied_for_both_outcomes(self):
+        self.f.apply()
+        (self.root / 'README.md').write_bytes(self.f.f.files['README.md'])
+        for outcome in ('commit', 'rollback'):
+            with self.assertRaisesRegex(u.UpdateError, 'tree differs'):
+                self.finalize(outcome)
+        self.assert_gate()
+
+    def test_corrupt_backup_denies_finalization(self):
+        self.f.apply()
+        (self.marker / 'backup' / 'README.md').write_bytes(b'corrupt')
+        with self.assertRaisesRegex(u.UpdateError, 'backup differs'):
+            self.finalize()
+        self.assert_gate()
+
+    def test_tampered_intent_denies_finalization(self):
+        self.f.apply()
+        (self.marker / 'intent.json').write_bytes(b'{}')
+        with self.assertRaisesRegex(u.UpdateError, 'intent differs'):
+            self.finalize()
+        self.assert_gate()
+
+    def test_busy_lock_denies_finalization(self):
+        self.f.apply()
+        with u.installation_lock(self.root):
+            with self.assertRaises(u.UpdateError):
+                self.finalize()
+        self.assert_gate()
+
+    def test_rename_failure_retains_gate_and_retry_succeeds(self):
+        self.f.apply()
+        with patch('os.rename', side_effect=OSError('unavailable')):
+            with self.assertRaisesRegex(u.UpdateError, 'Finalization unavailable'):
+                self.finalize()
+        self.assert_gate()
+        self.f.assert_tree(self.f.new_files)
+        self.assertTrue(self.finalize().is_dir())
+        self.assertFalse(self.marker.exists())
+
+    def test_invalid_signature_and_invalid_outcome_denied(self):
+        from dataclasses import replace
+        self.f.apply()
+        with self.assertRaises(u.UpdateError):
+            self.finalize('auto')
+        self.f.target = replace(self.f.target, signature=b'x'*64)
+        with self.assertRaises(u.UpdateError):
+            self.finalize()
+        self.assert_gate()

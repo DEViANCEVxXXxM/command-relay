@@ -1110,6 +1110,45 @@ def _recover_pending_update(root, installed, target):
             raise UpdateError('Pending recovery interrupted or unavailable; preserve evidence.') from None
 
 
+def _finalize_pending_update(root, installed, target, *, outcome):
+    """Release the startup gate only for a complete authenticated tree.
+
+    Keep the journal and backups in a fresh sibling evidence directory. One
+    same-volume directory rename removes the marker without partial deletion.
+    This internal prototype grants no authority and executes no package code.
+    The caller must retain both packages and explicitly choose the outcome.
+    """
+    import os
+    import tempfile
+    if outcome not in ('commit', 'rollback'):
+        raise UpdateError('Expected explicit commit or rollback outcome.')
+    root = Path(root)
+    with installation_lock(root):
+        old, new, _ = _recovery_packages(installed, target)
+        marker = root / UPDATE_TRANSACTION_NAME
+        intent = _pending_intent(installed, target, old, new)
+        try:
+            _check_transaction_layout(root)
+            if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
+                raise UpdateError('Pending transaction intent differs.')
+            chosen = new if outcome == 'commit' else old
+            for name in sorted(chosen):
+                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != chosen[name]:
+                    raise UpdateError('Selected finalization tree differs.')
+                if old[name] != new[name]:
+                    if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
+                        raise UpdateError('Pending transaction backup differs.')
+            # Do not delete evidence or move it into user-data directories.
+            # If the parent is not writable or rename fails, retain the gate.
+            _checked_path(root.parent, directory=True)
+            evidence = Path(tempfile.mkdtemp(prefix='.relay-update-evidence-', dir=root.parent))
+            _checked_path(evidence, directory=True)
+            os.rename(marker, evidence / UPDATE_TRANSACTION_NAME)
+            return evidence / UPDATE_TRANSACTION_NAME
+        except OSError:
+            raise UpdateError('Finalization unavailable; inspect transaction and evidence directories.') from None
+
+
 def updater_main(argv=None):
     """Read-only standalone updater entry point (no Qt or package execution)."""
     import argparse
