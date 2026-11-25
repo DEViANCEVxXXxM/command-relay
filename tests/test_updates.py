@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
+import hashlib
 import io
 import json
 import unittest
@@ -327,9 +328,19 @@ class PublisherSignatureTests(unittest.TestCase):
             return u.verify_publisher_package(self.package, raw, signature)
 
     def test_unprovisioned_key_denies(self):
-        self.assertIsNone(u.PUBLISHER_PUBLIC_KEY)
         raw = self.raw()
-        with self.assertRaisesRegex(u.UpdateError, 'not configured'):
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', None):
+            with self.assertRaisesRegex(u.UpdateError, 'not configured'):
+                u.verify_publisher_package(self.package, raw, self.key.sign(raw))
+
+    def test_production_pin_fingerprint(self):
+        self.assertEqual(len(u.PUBLISHER_PUBLIC_KEY), 32)
+        self.assertEqual(hashlib.sha256(u.PUBLISHER_PUBLIC_KEY).hexdigest(),
+                         'f3d92fd2e380dcb0640eb087c96a0da699ec66ca35dc902f97559192ead62e99')
+
+    def test_production_pin_rejects_ephemeral_signer(self):
+        raw = self.raw()
+        with self.assertRaisesRegex(u.UpdateError, 'verification failed'):
             u.verify_publisher_package(self.package, raw, self.key.sign(raw))
 
     def test_valid_signature(self):
