@@ -820,3 +820,74 @@ def rehearse_interrupted_installation(installed, target):
             return InstallRehearsal(plan.current, plan.target, restored, True)
     except OSError:
         raise UpdateError('Unable to complete recovery rehearsal.') from None
+
+
+UPDATE_LOCK_NAME = '.relay-update.lock'
+
+
+@contextmanager
+def installation_lock(root):
+    """Nonblocking cooperative OS lock for one portable installation.
+
+    The empty lock file is intentionally retained: unlinking a locked inode
+    could create a second, independent lock. The OS releases the lock on exit
+    or process termination. This is not an authorization, a sandbox, or a
+    defence against a hostile same-user process replacing the directory/file.
+    Both the application and updater must eventually hold this same lock for
+    their entire critical lifetime. Not wired into startup in this change.
+    """
+    import os
+    fd = None
+    locked = False
+    try:
+        root = Path(root)
+        if not root.is_absolute() or '..' in root.parts or root.parent == root:
+            raise UpdateError('Expected an absolute non-root installation directory.')
+        for parent in (*reversed(root.parents), root):
+            _checked_path(parent, directory=True)
+            try:
+                (parent / '.git').lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise UpdateError('Git checkout cannot be locked for updates.')
+        path = root / UPDATE_LOCK_NAME
+        # Check existing name before open; never truncate or write to it.
+        try:
+            _checked_path(path, directory=False)
+        except FileNotFoundError:
+            pass
+        fd = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, 'O_BINARY', 0)
+                     | getattr(os, 'O_NOFOLLOW', 0), 0o600)
+        info = _checked_path(path, directory=False)
+        opened = os.fstat(fd)
+        if (not os.path.samestat(info, opened) or opened.st_nlink != 1
+                or opened.st_size != 0):
+            raise UpdateError('Unsafe update lock file.')
+        if os.name == 'nt':
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        elif os.name == 'posix':
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            raise UpdateError('Unsupported installation lock platform.')
+        locked = True
+        if not os.path.samestat(_checked_path(path, directory=False), os.fstat(fd)):
+            raise UpdateError('Update lock identity changed.')
+    except (OSError, ValueError, TypeError) as exc:
+        if fd is not None:
+            os.close(fd)
+        raise UpdateError('Installation lock unavailable or already held.') from None
+    except BaseException:
+        if fd is not None:
+            os.close(fd)
+        raise
+    try:
+        yield
+    finally:
+        # Closing the non-inherited descriptor releases the OS lock. Never
+        # delete the file, including on exceptions or lock acquisition failure.
+        if locked:
+            os.close(fd)

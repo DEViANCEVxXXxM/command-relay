@@ -985,3 +985,93 @@ class CrossProcessRecoveryTests(unittest.TestCase):
         self.assertEqual((self.base/'portable'/'README.md').read_bytes(), self.target['README.md'])
         self.assertEqual(self.recover(), ('README.md',))
         self.verify_restored()
+
+
+class InstallationLockTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name).resolve() / 'portable'
+        self.root.mkdir()
+        self.lock = self.root / u.UPDATE_LOCK_NAME
+
+    def test_release_and_reacquire(self):
+        with u.installation_lock(self.root):
+            self.assertEqual(self.lock.stat().st_size, 0)
+        with u.installation_lock(self.root):
+            self.assertTrue(self.lock.is_file())
+        self.assertTrue(self.lock.is_file())
+
+    def test_exception_releases_lock(self):
+        with self.assertRaisesRegex(RuntimeError, 'caller failed'):
+            with u.installation_lock(self.root):
+                raise RuntimeError('caller failed')
+        with u.installation_lock(self.root):
+            pass
+
+    def test_git_checkout_denied(self):
+        (self.root.parent / '.git').mkdir()
+        with self.assertRaisesRegex(u.UpdateError, 'Git checkout'):
+            with u.installation_lock(self.root):
+                self.fail('lock acquired')
+        self.assertFalse(self.lock.exists())
+
+    def test_existing_nonempty_file_untouched(self):
+        self.lock.write_bytes(b'preserve')
+        with self.assertRaises(u.UpdateError):
+            with u.installation_lock(self.root):
+                self.fail('lock acquired')
+        self.assertEqual(self.lock.read_bytes(), b'preserve')
+
+    def test_link_denied(self):
+        import os
+        target = self.root / 'settings.json'
+        target.write_bytes(b'')
+        try:
+            os.link(target, self.lock)
+        except OSError:
+            self.skipTest('hardlinks unavailable')
+        with self.assertRaises(u.UpdateError):
+            with u.installation_lock(self.root):
+                self.fail('lock acquired')
+        self.assertEqual(target.read_bytes(), b'')
+
+    def test_invalid_directory_denied(self):
+        with self.assertRaises(u.UpdateError):
+            with u.installation_lock(self.root / 'missing'):
+                self.fail('lock acquired')
+        self.assertFalse(self.lock.exists())
+
+    def test_cross_process_exclusion_and_kill(self):
+        import subprocess, sys, time
+        ready = self.root / 'ready'
+        code = '''
+import sys
+from pathlib import Path
+from command_relay.relay_updates import installation_lock
+with installation_lock(Path(sys.argv[1])):
+    Path(sys.argv[2]).write_text('ready', encoding='ascii')
+    sys.stdin.readline()
+'''
+        child = subprocess.Popen([sys.executable, '-B', '-c', code, str(self.root), str(ready)],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and child.poll() is None and time.monotonic() < deadline:
+                time.sleep(.02)
+            self.assertTrue(ready.exists(), 'child failed to acquire lock')
+            self.assertIsNone(child.poll())
+            with self.assertRaises(u.UpdateError):
+                with u.installation_lock(self.root):
+                    self.fail('second process acquired lock')
+            child.kill()
+            child.communicate(timeout=10)
+            self.assertNotEqual(child.returncode, 0)
+            with u.installation_lock(self.root):
+                self.assertTrue(self.lock.exists())
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=10)
