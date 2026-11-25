@@ -315,7 +315,8 @@ def inspect_package(download, expected_files):
 
 # Provision only from an independently reviewed publisher public key. Never
 # accept a key supplied by the release, manifest, network, or local settings.
-PUBLISHER_PUBLIC_KEY = None
+PUBLISHER_PUBLIC_KEY = bytes.fromhex(
+    '835cafd70177a9c97c426d1f05b522650d05a16c302380654372da4d0c07389b')
 MAX_SIGNED_MANIFEST = 128 * 1024
 MANIFEST_SCHEMA = 'command-relay/update-manifest-v1'
 
@@ -323,7 +324,7 @@ MANIFEST_SCHEMA = 'command-relay/update-manifest-v1'
 def verify_publisher_package(download, manifest_bytes, signature):
     """Verify a detached Ed25519 signature and its exact package binding.
 
-    The key is intentionally unprovisioned until a separate reviewed change.
+    The publisher key is pinned in the reviewed application source.
     A verified package is not authorization to install or execute it.
     """
     key = PUBLISHER_PUBLIC_KEY
