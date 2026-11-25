@@ -30,14 +30,14 @@ The ZIP contains configuration only; GitHub account and repository settings must
 ## Release process
 
 1. Run unit tests and Windows smoke checks, including the example tasks manually. Confirm license and version in `command_relay/relay_version.py`.
-2. Commit and merge, ensure CI passed, then tag the exact version (example for 4.1.0; do not reuse an existing tag):
+2. Commit and merge, ensure CI passed, then tag the exact version (example for 4.2.0; do not reuse an existing tag):
 
    ```powershell
-   git tag -a v4.1.0 -m "Command Relay 4.1.0"
-   git push origin v4.1.0
+   git tag -a v4.2.0 -m "Command Relay 4.2.0"
+   git push origin v4.2.0
    ```
 
 3. The Release workflow retests, checks the tag against the application version, builds an allowlisted portable ZIP and SHA-256 file, and creates a **draft** GitHub Release with generated notes. Review its assets, notes and contents before publishing. A failed or duplicate release needs maintainer review; do not overwrite a published tag.
-4. To verify a downloaded asset in Windows: `Get-FileHash .\command-relay-v4.1.0-windows.zip -Algorithm SHA256`. Compare the digest with the published `.sha256` file.
+4. To verify a downloaded asset in Windows: `Get-FileHash .\command-relay-v4.2.0-windows.zip -Algorithm SHA256`. Compare the digest with the published `.sha256` file.
 
 The release ZIP excludes local data, test code and GitHub metadata. The full repository source remains available in GitHub's generated source archive. The fixed ZIP layout is repeatable in the same Python/zlib environment; different compressor versions need not produce identical bytes. No signed binary, installer, PyPI package or artifact attestation is claimed.

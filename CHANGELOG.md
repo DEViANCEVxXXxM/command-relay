@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.2.0 — Safety & Control Center
+
+- Built-in automatic squash merge now defaults to denied and requires explicit opt-in for the resolved workspace and exact GitHub repository, in addition to task review. Authorization is rechecked during CI waiting and immediately before the write; GitHub branch protection still applies.
+- Added local Safety settings with scope preview, explicit confirmation, selected/all revocation and a bounded 128-event permission history. Legacy general settings do not grant permissions; malformed policy fails closed. The policy is separate from general settings and must not be shared.
+- Consolidated safety and display preferences under More > Settings. Adaptive action rows wrap long labels when needed, including RTL, without adding controls to the normal workbench.
+- Verified 178 regression tests, Windows Qt smoke, six offscreen DPI/style probes at 100%, 150% and 200%, and the 38-file portable build during candidate audits. Offscreen checks are not full visual acceptance or comparative performance certification.
+- Other built-in automatic actions (unattended execution, push, PR creation, branch deletion, update installation and parallel execution) are not implemented. Reviewed arbitrary scripts still run with user privileges and are outside the permission boundary. No sandbox, unattended execution, automatic update installation or expanded localization is introduced.
+- Packet schemas and startup acknowledgement remain unchanged. Fresh installs have no automation grants.
+
 ## 4.1.0 — Workflow Intelligence
 
 - Added bounded history lookup and explicit confirmation before rerunning a matching task.

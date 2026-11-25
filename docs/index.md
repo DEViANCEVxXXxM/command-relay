@@ -32,6 +32,14 @@ layout: relay-home
 - Local evidence archives, comparisons and Git context tools.
 - No mandatory AI API key, account, telemetry or cloud connection. Commands can access the network if you run such commands.
 
+## Safety & Control Center — 4.2.0
+
+- Default-denied built-in automatic squash merge, with workspace/repository opt-in and authorization rechecks.
+- Local safety settings, revocation and bounded permission history.
+- Consolidated settings and adaptive action rows for long labels and RTL.
+
+Arbitrary reviewed scripts remain outside the policy boundary. Other built-in automatic actions, automatic updates and expanded localization are not implemented.
+
 ## Workflow Intelligence — 4.1.0
 
 - Matching-run confirmation and improved indirect-operation warnings.

@@ -1,4 +1,4 @@
-COMMAND RELAY 4.1.0 — WORKFLOW INTELLIGENCE
+COMMAND RELAY 4.2.0 — SAFETY & CONTROL CENTER
 Compatible with existing task-v1, result-v1 and session-v1 packets. See README.md and CHANGELOG.md.
 
 LICENSE AND EXECUTION RISKS
@@ -124,20 +124,28 @@ Search in terminal is limited to visible tail. Workspace Profiles are local.
 More > Git: local Git dashboard and fixed Git read operations.
 GitHub pull requests: optional authenticated CLI, inspect CI, explicit squash merge,
 and review/copy status. GitHub controls merge permissions.
+More > Settings > Safety settings: built-in automatic squash merge is denied
+by default. Review exact workspace and repository, opt in explicitly, and
+confirm the specific task. Revoke selected/all grants and view bounded History.
+Do not copy or share automation-permissions.json. Malformed policy denies
+automation; legacy general settings cannot grant it. The policy does not
+restrict arbitrary scripts. Other built-in automatic actions are not implemented.
+More > Settings also groups display preferences. Long action labels wrap.
 History > Review workspace session: preview protected session context before export.
 More > Reports: explicit masked JSON, masked compact text and RAW/unmasked copy modes.
 More > Project: project snapshot and selected source context.
 More > Reports: observed metrics, latest report and reports folder.
 More also contains SHA-256, task queue (session only, manual launch),
-Clear editor and View options. These are optional; routine tasks need none.
+Clear editor and display preferences. These are optional; routine tasks need none.
 Evidence ZIP contains selected reports and SHA-256 manifest. No automatic upload.
 Use only trusted scripts. Runs are not sandboxed. Stop cannot roll back effects.
 Windows execution policy is respected. Do not weaken system protections.
 
 VALIDATION
 Run examples/example-ai-task.json first: expected COUNT=15, RELAY_PASS=True, exit 0, assertions.status=PASS.
-Python tests: python -m unittest -v. Native Qt GUI and PowerShell on Windows
-not executed in the development environment for this release.
+Python tests: python -m unittest discover -v. Windows Qt smoke and six
+offscreen DPI/style probes were run for the 4.2 candidate; visual acceptance
+and full startup performance are separate checks.
 
 AUTOMATIC COMPARISON AND ARTIFACTS (3.6)
 Normal Copy includes comparison and artifacts. No additional action is needed.
