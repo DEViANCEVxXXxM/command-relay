@@ -1,1 +1,2 @@
 PySide6>=6.12.0,<7
+cryptography==50.0.2

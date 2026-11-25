@@ -303,3 +303,83 @@ class PackageTests(unittest.TestCase):
         info = replace(p.info, archive=replace(p.info.archive, size=len(raw), digest='sha256:'+digest))
         with self.assertRaisesRegex(u.UpdateError, 'damaged release ZIP'):
             u.inspect_package(u.DownloadedUpdate(info, raw, digest), self.manifest(a=b'x'))
+
+
+class PublisherSignatureTests(unittest.TestCase):
+    def setUp(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        self.key = Ed25519PrivateKey.generate()
+        self.pub = self.key.public_key().public_bytes_raw()
+        self.package = PackageTests().package([('Start.pyw', b'x', 0o100644)])
+        self.manifest = {'schema': u.MANIFEST_SCHEMA, 'repository': u.REPOSITORY,
+                         'version': self.package.info.latest,
+                         'archive': {'name': self.package.info.archive.name,
+                                     'size': len(self.package.archive), 'sha256': self.package.sha256},
+                         'files': PackageTests().manifest(**{'Start.pyw': b'x'})}
+
+    def raw(self):
+        return json.dumps(self.manifest, sort_keys=True).encode('utf-8')
+
+    def verify(self, raw=None, signature=None):
+        raw = self.raw() if raw is None else raw
+        signature = self.key.sign(raw) if signature is None else signature
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', self.pub):
+            return u.verify_publisher_package(self.package, raw, signature)
+
+    def test_unprovisioned_key_denies(self):
+        self.assertIsNone(u.PUBLISHER_PUBLIC_KEY)
+        raw = self.raw()
+        with self.assertRaisesRegex(u.UpdateError, 'not configured'):
+            u.verify_publisher_package(self.package, raw, self.key.sign(raw))
+
+    def test_valid_signature(self):
+        self.assertEqual(self.verify(), ('Start.pyw',))
+
+    def test_modified_manifest_and_signature(self):
+        raw = self.raw()
+        signature = self.key.sign(raw)
+        for data, sig in ((raw+b' ', signature), (raw, bytes([signature[0]^1])+signature[1:])):
+            with self.assertRaises(u.UpdateError):
+                self.verify(data, sig)
+
+    def test_wrong_key(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        raw = self.raw()
+        with self.assertRaises(u.UpdateError):
+            self.verify(raw, Ed25519PrivateKey.generate().sign(raw))
+
+    def test_signed_wrong_identity(self):
+        for field, value in [('schema','other'), ('repository','other/repo'), ('version','4.9.0')]:
+            old = self.manifest[field]
+            self.manifest[field] = value
+            with self.assertRaises(u.UpdateError):
+                self.verify()
+            self.manifest[field] = old
+
+    def test_signed_wrong_archive(self):
+        for field, value in [('size',True), ('sha256','0'*64), ('name','other.zip')]:
+            old = self.manifest['archive'][field]
+            self.manifest['archive'][field] = value
+            with self.assertRaises(u.UpdateError):
+                self.verify()
+            self.manifest['archive'][field] = old
+
+    def test_signed_wrong_file_hash(self):
+        self.manifest['files']['Start.pyw'] = '0'*64
+        with self.assertRaises(u.UpdateError):
+            self.verify()
+
+    def test_invalid_manifest_and_bounds(self):
+        for raw in (b'{', b'{"schema":1,"schema":2}', b'[]', b' '* (u.MAX_SIGNED_MANIFEST+1)):
+            with self.assertRaises(u.UpdateError):
+                self.verify(raw)
+        with self.assertRaises(u.UpdateError):
+            self.verify(signature=b'bad')
+
+    def test_missing_crypto_denies(self):
+        import sys
+        raw = self.raw()
+        signature = self.key.sign(raw)
+        with patch.dict(sys.modules, {'cryptography.exceptions':None}):
+            with self.assertRaisesRegex(u.UpdateError, 'unavailable'):
+                self.verify(raw, signature)
