@@ -1394,3 +1394,133 @@ class TransactionFinalizationTests(unittest.TestCase):
         with self.assertRaises(u.UpdateError):
             self.finalize()
         self.assert_gate()
+
+
+class StandaloneTransactionTests(unittest.TestCase):
+    def setUp(self):
+        self.f = StandaloneUpdaterTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.root = self.f.root
+        self.marker = self.root / u.UPDATE_TRANSACTION_NAME
+        self.policy = self.root / 'automation-permissions.json'
+
+    def grant(self):
+        from command_relay.relay_permissions import with_permission
+        self.policy.write_text(json.dumps(with_permission({}, 'update_install', enabled=True)), encoding='utf-8')
+
+    def run_mode(self, action, token=None, tty=True):
+        import sys
+        stdin = io.StringIO(token or '')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with patch.object(stdin, 'isatty', return_value=tty), patch.object(stderr, 'isatty', return_value=tty), \
+                patch.object(sys, 'stdin', stdin), patch.object(sys, 'stdout', stdout), patch.object(sys, 'stderr', stderr):
+            status = u.updater_main(['--'+action, *self.f.args()[1:]])
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_install_confirmed_and_finalized(self):
+        self.grant()
+        before = self.policy.read_bytes()
+        status, output, prompt = self.run_mode('install', 'INSTALL 4.10.0\n')
+        self.assertEqual(status, 0, prompt)
+        result = json.loads(output)
+        self.assertEqual(result['outcome'], 'commit')
+        self.assertFalse(result['restart_performed'])
+        self.assertFalse(self.marker.exists())
+        from pathlib import Path
+        self.assertTrue((Path(result['evidence'])/'intent.json').is_file())
+        self.assertEqual((self.root/'Start.pyw').read_bytes(), b'new launcher')
+        self.assertEqual((self.root/'settings.json').read_bytes(), b'preserve me')
+        self.assertEqual(self.policy.read_bytes(), before)
+
+    def test_default_deny_and_cancel(self):
+        before = self.f.snapshot()
+        status, output, _ = self.run_mode('install', 'INSTALL 4.10.0\n')
+        self.assertEqual((status, output), (1, ''))
+        self.assertEqual(self.f.snapshot(), before)
+        self.grant()
+        before = self.f.snapshot()
+        for token, tty in (('INSTALL 4.10.0\n', False), ('no\n', True), ('', True)):
+            status, output, _ = self.run_mode('install', token, tty)
+            self.assertEqual((status, output), (1, ''))
+            self.assertEqual(self.f.snapshot(), before)
+        self.assertFalse(self.marker.exists())
+
+    def test_permission_revoked_after_confirmation(self):
+        self.grant()
+        with patch.object(u, '_confirm_update_operation', side_effect=lambda *a: self.policy.write_text('{}')):
+            status, _, _ = self.run_mode('install')
+        self.assertEqual(status, 1)
+        self.assertFalse(self.marker.exists())
+        self.assertEqual((self.root/'Start.pyw').read_bytes(), self.f.fixture.files['Start.pyw'])
+
+    def test_policy_lock_and_duplicate_rejected(self):
+        self.grant()
+        lock = self.root / '.automation-permissions.lock'
+        lock.touch()
+        self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        lock.unlink()
+        self.policy.write_text('{"automation_permissions":{},"automation_permissions":{}}')
+        self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_lock_held_during_confirmation_and_finalization(self):
+        self.grant()
+        original = u._finalize_pending_update_locked
+        def confirm(*args):
+            with self.assertRaises(u.UpdateError):
+                with u.installation_lock(self.root):
+                    self.fail('lock released during confirmation')
+        def finalize(*args, **kwargs):
+            with self.assertRaises(u.UpdateError):
+                with u.installation_lock(self.root):
+                    self.fail('lock released before finalization')
+            return original(*args, **kwargs)
+        with patch.object(u, '_confirm_update_operation', side_effect=confirm), \
+                patch.object(u, '_finalize_pending_update_locked', side_effect=finalize):
+            self.assertEqual(self.run_mode('install')[0], 0)
+
+    def test_failed_install_then_manual_recovery_without_grant(self):
+        self.grant()
+        replace = u._replace_rehearsal_file
+        def interrupt(*args):
+            replace(*args)
+            raise OSError('simulated error')
+        with patch.object(u, '_replace_rehearsal_file', side_effect=interrupt):
+            self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        self.assertTrue(self.marker.is_dir())
+        self.policy.unlink()
+        self.assertEqual(self.run_mode('recover', 'no\n')[0], 1)
+        self.assertTrue(self.marker.is_dir())
+        status, output, error = self.run_mode('recover', 'RECOVER 4.10.0\n')
+        self.assertEqual(status, 0, error)
+        self.assertEqual(json.loads(output)['outcome'], 'rollback')
+        self.assertFalse(self.marker.exists())
+        self.assertEqual((self.root/'Start.pyw').read_bytes(), self.f.fixture.files['Start.pyw'])
+
+    def test_bad_signature_and_busy_denied(self):
+        self.grant()
+        with u.installation_lock(self.root):
+            self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        next(self.f.target.glob('*.sig')).write_bytes(b'x'*64)
+        self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_code_inside_destination_denied(self):
+        self.grant()
+        with patch.object(u, '__file__', str(self.root/'command_relay'/'relay_updates.py')):
+            self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        self.assertFalse(self.marker.exists())
+
+    def test_changed_dependencies_denied(self):
+        self.grant()
+        package = self.f.fixture.package(u.VERSION, '4.10.0', dict(self.f.fixture.new_files,
+                                                **{'requirements.txt': b'new requirements'}))
+        folder = self.f.target
+        stem = package.download.info.archive.name[:-4]
+        (folder/(stem+'.zip')).write_bytes(package.download.archive)
+        (folder/(stem+'.sha256')).write_bytes(f'{package.download.sha256}  {stem}.zip\n'.encode())
+        (folder/(stem+'.manifest.json')).write_bytes(package.manifest)
+        (folder/(stem+'.manifest.sig')).write_bytes(package.signature)
+        self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
+        self.assertFalse(self.marker.exists())

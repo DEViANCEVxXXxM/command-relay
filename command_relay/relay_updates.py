@@ -1026,6 +1026,11 @@ def _pending_intent(installed, target, old, new):
 
 
 def _apply_pending_update(root, installed, target):
+    with installation_lock(root):
+        return _apply_pending_update_locked(root, installed, target)
+
+
+def _apply_pending_update_locked(root, installed, target):
     """Internal transaction prototype; not exposed by the standalone CLI.
 
     Under the shared lock, verify both packages and the existing tree. Keep
@@ -1034,38 +1039,42 @@ def _apply_pending_update(root, installed, target):
     No permission grant, dependency installation, restart or power-loss claim.
     """
     root = Path(root)
-    with installation_lock(root):
-        _require_no_pending_transaction(root)
-        old, new, _ = _recovery_packages(installed, target)
-        plan = plan_installation(root, installed, target)
+    _require_no_pending_transaction(root)
+    old, new, _ = _recovery_packages(installed, target)
+    plan = plan_installation(root, installed, target)
+    _check_transaction_layout(root)
+    marker = root / UPDATE_TRANSACTION_NAME
+    try:
+        marker.mkdir(mode=0o700)
+        for name in plan.replace:
+            _write_rehearsal_file(marker / 'backup' / name, old[name])
+            _write_rehearsal_file(marker / 'incoming' / name, new[name])
+        intent = _pending_intent(installed, target, old, new)
+        _write_rehearsal_file(marker / 'intent.json', intent)
+        # Recheck the complete original tree and journal before first write.
+        plan_installation(root, installed, target)
         _check_transaction_layout(root)
-        marker = root / UPDATE_TRANSACTION_NAME
-        try:
-            marker.mkdir(mode=0o700)
-            for name in plan.replace:
-                _write_rehearsal_file(marker / 'backup' / name, old[name])
-                _write_rehearsal_file(marker / 'incoming' / name, new[name])
-            intent = _pending_intent(installed, target, old, new)
-            _write_rehearsal_file(marker / 'intent.json', intent)
-            # Recheck the complete original tree and journal before first write.
-            plan_installation(root, installed, target)
-            _check_transaction_layout(root)
-            for name in plan.replace:
-                for prefix, data in (('backup/', old[name]), ('incoming/', new[name])):
-                    if _read_recovery_file(marker, prefix + name, MAX_MEMBER_BYTES) != data:
-                        raise UpdateError('Pending transaction staging differs.')
-            for name in plan.replace:
-                _replace_rehearsal_file(marker / 'incoming' / name, root / name,
-                                        old[name], new[name])
-            for name, data in new.items():
-                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
-                    raise UpdateError('Pending target tree differs.')
-            return plan
-        except OSError:
-            raise UpdateError('Pending update interrupted; preserve transaction files.') from None
+        for name in plan.replace:
+            for prefix, data in (('backup/', old[name]), ('incoming/', new[name])):
+                if _read_recovery_file(marker, prefix + name, MAX_MEMBER_BYTES) != data:
+                    raise UpdateError('Pending transaction staging differs.')
+        for name in plan.replace:
+            _replace_rehearsal_file(marker / 'incoming' / name, root / name,
+                                    old[name], new[name])
+        for name, data in new.items():
+            if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
+                raise UpdateError('Pending target tree differs.')
+        return plan
+    except OSError:
+        raise UpdateError('Pending update interrupted; preserve transaction files.') from None
 
 
 def _recover_pending_update(root, installed, target):
+    with installation_lock(root):
+        return _recover_pending_update_locked(root, installed, target)
+
+
+def _recover_pending_update_locked(root, installed, target):
     """Restore authenticated original files under lock; retain the marker.
 
     Requires both signed packages and intact backups. Unknown contents or an
@@ -1075,42 +1084,46 @@ def _recover_pending_update(root, installed, target):
     import os
     import tempfile
     root = Path(root)
-    with installation_lock(root):
-        old, new, _ = _recovery_packages(installed, target)
-        marker = root / UPDATE_TRANSACTION_NAME
-        intent = _pending_intent(installed, target, old, new)
-        try:
-            _check_transaction_layout(root)
-            if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
-                raise UpdateError('Pending transaction intent differs.')
-            pending = []
-            for name in sorted(old):
-                actual = _read_recovery_file(root, name, MAX_MEMBER_BYTES)
-                if actual not in (old[name], new[name]):
-                    raise UpdateError('Unknown pending program file state.')
-                if old[name] != new[name]:
-                    if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
-                        raise UpdateError('Pending transaction backup differs.')
-                    if actual != old[name]:
-                        pending.append(name)
-            for name in reversed(pending):
-                # Unique same-volume restore file; the authenticated backup
-                # remains intact even if this process dies after replacement.
-                with tempfile.NamedTemporaryFile(dir=marker, prefix='restore-', delete=False) as stream:
-                    scratch = Path(stream.name)
-                    stream.write(old[name])
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                _replace_rehearsal_file(scratch, root / name, new[name], old[name])
-            for name, data in old.items():
-                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
-                    raise UpdateError('Restored original tree differs.')
-            return tuple(pending)
-        except OSError:
-            raise UpdateError('Pending recovery interrupted or unavailable; preserve evidence.') from None
+    old, new, _ = _recovery_packages(installed, target)
+    marker = root / UPDATE_TRANSACTION_NAME
+    intent = _pending_intent(installed, target, old, new)
+    try:
+        _check_transaction_layout(root)
+        if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
+            raise UpdateError('Pending transaction intent differs.')
+        pending = []
+        for name in sorted(old):
+            actual = _read_recovery_file(root, name, MAX_MEMBER_BYTES)
+            if actual not in (old[name], new[name]):
+                raise UpdateError('Unknown pending program file state.')
+            if old[name] != new[name]:
+                if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
+                    raise UpdateError('Pending transaction backup differs.')
+                if actual != old[name]:
+                    pending.append(name)
+        for name in reversed(pending):
+            # Unique same-volume restore file; the authenticated backup
+            # remains intact even if this process dies after replacement.
+            with tempfile.NamedTemporaryFile(dir=marker, prefix='restore-', delete=False) as stream:
+                scratch = Path(stream.name)
+                stream.write(old[name])
+                stream.flush()
+                os.fsync(stream.fileno())
+            _replace_rehearsal_file(scratch, root / name, new[name], old[name])
+        for name, data in old.items():
+            if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
+                raise UpdateError('Restored original tree differs.')
+        return tuple(pending)
+    except OSError:
+        raise UpdateError('Pending recovery interrupted or unavailable; preserve evidence.') from None
 
 
 def _finalize_pending_update(root, installed, target, *, outcome):
+    with installation_lock(root):
+        return _finalize_pending_update_locked(root, installed, target, outcome=outcome)
+
+
+def _finalize_pending_update_locked(root, installed, target, *, outcome):
     """Release the startup gate only for a complete authenticated tree.
 
     Keep the journal and backups in a fresh sibling evidence directory. One
@@ -1123,47 +1136,135 @@ def _finalize_pending_update(root, installed, target, *, outcome):
     if outcome not in ('commit', 'rollback'):
         raise UpdateError('Expected explicit commit or rollback outcome.')
     root = Path(root)
+    old, new, _ = _recovery_packages(installed, target)
+    marker = root / UPDATE_TRANSACTION_NAME
+    intent = _pending_intent(installed, target, old, new)
+    try:
+        _check_transaction_layout(root)
+        if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
+            raise UpdateError('Pending transaction intent differs.')
+        chosen = new if outcome == 'commit' else old
+        for name in sorted(chosen):
+            if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != chosen[name]:
+                raise UpdateError('Selected finalization tree differs.')
+            if old[name] != new[name]:
+                if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
+                    raise UpdateError('Pending transaction backup differs.')
+        # Do not delete evidence or move it into user-data directories.
+        # If the parent is not writable or rename fails, retain the gate.
+        _checked_path(root.parent, directory=True)
+        evidence = Path(tempfile.mkdtemp(prefix='.relay-update-evidence-', dir=root.parent))
+        _checked_path(evidence, directory=True)
+        os.rename(marker, evidence / UPDATE_TRANSACTION_NAME)
+        return evidence / UPDATE_TRANSACTION_NAME
+    except OSError:
+        raise UpdateError('Finalization unavailable; inspect transaction and evidence directories.') from None
+
+
+def _require_install_permission(root):
+    """Read the destination policy, not the standalone copy's policy."""
+    from .relay_permissions import KEY, AUDIT_KEY, allowed, audit_history
+    try:
+        def pending():
+            return any(p.name.rstrip(' .').casefold() == '.automation-permissions.lock'
+                       for p in root.iterdir())
+        if pending():
+            raise UpdateError('Update installation permission unavailable.')
+        raw = _read_recovery_file(root, 'automation-permissions.json', 1_000_000)
+        policy = json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object)
+        if (not isinstance(policy, dict) or set(policy) - {KEY, AUDIT_KEY}
+                or not allowed(policy, 'update_install')):
+            raise UpdateError('Update installation permission not granted.')
+        audit_history(policy)
+        if pending():
+            raise UpdateError('Update installation permission unavailable.')
+    except (OSError, ValueError, TypeError, RecursionError):
+        raise UpdateError('Update installation permission unavailable.') from None
+
+
+def _confirm_update_operation(action, root, original, target):
+    """Explicit local terminal approval, never read redirected input."""
+    import sys
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        raise UpdateError('Interactive terminal confirmation required.')
+    token = f'{action.upper()} {target.download.info.latest}'
+    print(f'Installation: {str(root)!r}\nAction: {action}\n'
+          f'Original: {original.download.info.latest} {original.download.sha256}\n'
+          f'Target: {target.download.info.latest} {target.download.sha256}\n'
+          f'Type {token!r} to confirm:', file=sys.stderr, flush=True)
+    if sys.stdin.readline(128).rstrip('\r\n') != token:
+        raise UpdateError('Update operation not confirmed.')
+
+
+def _run_local_transaction(root, original_folder, target_folder, target_version, *, action):
+    """Manual standalone write coordinator; no restart or permission changes.
+
+    Run from a separately trusted copy of the original version. Hold one
+    cooperative lock from inspection and consent through finalization. A
+    failure retains evidence for explicitly requested rollback; do not guess
+    the outcome or remove an incomplete marker. No power-loss guarantee.
+    """
+    if action not in ('install', 'recover'):
+        raise UpdateError('Unsupported transaction action.')
+    root = Path(root)
     with installation_lock(root):
-        old, new, _ = _recovery_packages(installed, target)
-        marker = root / UPDATE_TRANSACTION_NAME
-        intent = _pending_intent(installed, target, old, new)
-        try:
+        code = Path(__file__).resolve().parent.parent
+        resolved = root.resolve(strict=True)
+        if code == resolved or code.is_relative_to(resolved) or resolved.is_relative_to(code):
+            raise UpdateError('Run the updater from a separate trusted copy.')
+        if action == 'install':
+            _require_no_pending_transaction(root)
+            _require_install_permission(root)
+        original = load_local_signed_package(original_folder, VERSION, current='0.0.0')
+        target = load_local_signed_package(target_folder, target_version, current=VERSION)
+        old, new, _ = _recovery_packages(original, target)
+        if action == 'install':
+            plan_installation(root, original, target)
             _check_transaction_layout(root)
-            if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
-                raise UpdateError('Pending transaction intent differs.')
-            chosen = new if outcome == 'commit' else old
-            for name in sorted(chosen):
-                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != chosen[name]:
-                    raise UpdateError('Selected finalization tree differs.')
-                if old[name] != new[name]:
-                    if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
-                        raise UpdateError('Pending transaction backup differs.')
-            # Do not delete evidence or move it into user-data directories.
-            # If the parent is not writable or rename fails, retain the gate.
-            _checked_path(root.parent, directory=True)
-            evidence = Path(tempfile.mkdtemp(prefix='.relay-update-evidence-', dir=root.parent))
-            _checked_path(evidence, directory=True)
-            os.rename(marker, evidence / UPDATE_TRANSACTION_NAME)
-            return evidence / UPDATE_TRANSACTION_NAME
-        except OSError:
-            raise UpdateError('Finalization unavailable; inspect transaction and evidence directories.') from None
+            if old['requirements.txt'] != new['requirements.txt']:
+                raise UpdateError('Dependency changes require manual installation.')
+        _confirm_update_operation(action, root, original, target)
+        if action == 'install':
+            # Re-read permission after confirmation, immediately before writes.
+            _require_install_permission(root)
+            _apply_pending_update_locked(root, original, target)
+            outcome = 'commit'
+        else:
+            # Explicit repair is not an automatic installation grant. Permit
+            # restoring the signed original even if installation was revoked.
+            _recover_pending_update_locked(root, original, target)
+            outcome = 'rollback'
+        evidence = _finalize_pending_update_locked(root, original, target, outcome=outcome)
+        return {'schema': 'command-relay/update-transaction-v1', 'outcome': outcome,
+                'version': target_version if outcome == 'commit' else VERSION,
+                'evidence': str(evidence), 'restart_performed': False}
 
 
 def updater_main(argv=None):
-    """Read-only standalone updater entry point (no Qt or package execution)."""
+    """Standalone updater entry point (no Qt, restart or package execution)."""
     import argparse
     import sys
-    parser = argparse.ArgumentParser(description='Inspect a signed portable update; never install it.')
-    parser.add_argument('--inspect', required=True, action='store_true', help='Inspect only')
+    parser = argparse.ArgumentParser(description='Inspect or explicitly update a signed portable installation.')
+    modes = parser.add_mutually_exclusive_group(required=True)
+    modes.add_argument('--inspect', action='store_true', help='Inspect only')
+    modes.add_argument('--install', action='store_true', help='Install with permission and terminal confirmation')
+    modes.add_argument('--recover', action='store_true', help='Restore signed original with terminal confirmation')
     parser.add_argument('--root', required=True, type=Path)
     parser.add_argument('--original', required=True, type=Path)
     parser.add_argument('--target', required=True, type=Path)
     parser.add_argument('--target-version', required=True)
     args = parser.parse_args(argv)
     try:
+        if not args.inspect:
+            result = _run_local_transaction(args.root, args.original, args.target,
+                                            args.target_version,
+                                            action='install' if args.install else 'recover')
+            print(json.dumps(result, sort_keys=True))
+            return 0
         plan = inspect_local_installation(args.root, args.original, args.target, args.target_version)
-    except UpdateError as exc:
-        print(f'Update inspection denied: {exc}', file=sys.stderr)
+    except (UpdateError, OSError, KeyboardInterrupt) as exc:
+        print(f'Update operation denied: {exc}' if isinstance(exc, UpdateError) else
+              'Update operation interrupted or unavailable; preserve transaction evidence.', file=sys.stderr)
         return 1
     print(json.dumps({'schema': 'command-relay/update-preflight-v1', 'current': plan.current,
                       'target': plan.target, 'replace': list(plan.replace),
