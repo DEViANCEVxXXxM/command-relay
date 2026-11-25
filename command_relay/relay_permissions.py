@@ -3,7 +3,7 @@
 
 Not a sandbox or enforcement by itself. Callers must re-read policy immediately
 before a built-in write, verify the actual target, and separately confirm intent.
-No settings are written by this module.
+Policy storage is isolated from ordinary workbench settings.
 """
 import json
 import os
@@ -109,24 +109,81 @@ def with_permission(settings, action, *, enabled, workspace=None, repository=Non
     return {**settings, KEY: {'version': 1, 'grants': records}}
 
 
-def read_automation_settings():
-    """Read fresh settings for a built-in write; malformed or ambiguous means deny."""
+def policy_path():
     from .relay_core import SETTINGS
+    return SETTINGS.with_name('automation-permissions.json')
 
+
+def policy_snapshot():
+    """Strict read for settings UI; a missing file is an empty policy."""
     def unique_pairs(pairs):
         result = {}
         for key, value in pairs:
             if key in result:
-                raise ValueError('Duplicate settings key')
+                raise ValueError('Duplicate policy key')
             result[key] = value
         return result
 
     try:
-        with SETTINGS.open('r', encoding='utf-8') as stream:
+        with policy_path().open('r', encoding='utf-8') as stream:
             text = stream.read(1_000_001)
-        if len(text) > 1_000_000:
+    except FileNotFoundError:
+        return {}
+    if len(text) > 1_000_000:
+        raise ValueError('Policy file too large')
+    value = json.loads(text, object_pairs_hook=unique_pairs)
+    if not isinstance(value, dict) or set(value) - {KEY}:
+        raise ValueError('Invalid policy file')
+    _grants(value)
+    return value
+
+
+def read_automation_settings():
+    """Fresh isolated policy; legacy settings.json grants are not imported."""
+    try:
+        lock = policy_path().with_name('.automation-permissions.lock')
+        if lock.exists():
             return {}
-        value = json.loads(text, object_pairs_hook=unique_pairs)
-        return value if isinstance(value, dict) else {}
+        snapshot = policy_snapshot()
+        return {} if lock.exists() else snapshot
     except (OSError, ValueError, RecursionError):
         return {}
+
+
+def merge_scope(workspace):
+    from .relay_github import workspace_repo
+    path = _workspace(workspace)
+    return path, _repository(workspace_repo(path))
+
+
+def save_merge_permission(expected, *, workspace, repository, enabled):
+    """UI caller must separately confirm intent. Reject stale scope or policy."""
+    def change(current):
+        if merge_scope(workspace) != (_workspace(workspace), _repository(repository)):
+            raise ValueError('Workspace origin changed; refresh before saving')
+        return with_permission(current, 'squash_merge', enabled=enabled,
+                               workspace=workspace, repository=repository)
+    return _save_policy(expected, change)
+
+
+def revoke_all_permissions(expected):
+    return _save_policy(expected, lambda _: {KEY: {'version': 1, 'grants': []}})
+
+
+def _save_policy(expected, change):
+    from .relay_core import atomic_text
+    path = policy_path()
+    lock = path.with_name('.automation-permissions.lock')
+    # Exclusive local writer; a crashed writer leaves a fail-closed stale lock.
+    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    try:
+        os.close(fd)
+        current = policy_snapshot()
+        if current != expected:
+            raise ValueError('Policy changed; refresh before saving')
+        updated = change(current)
+        _grants(updated)
+        atomic_text(path, json.dumps(updated, ensure_ascii=False, indent=2))
+        return updated
+    finally:
+        lock.unlink()

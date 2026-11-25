@@ -72,8 +72,8 @@ class PermissionTests(unittest.TestCase):
 
     def test_fresh_settings_reject_duplicate_keys_and_invalid_data(self):
         from unittest.mock import patch
-        path = Path(self.tmp.name) / 'settings.json'
-        with patch('command_relay.relay_core.SETTINGS', path):
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch('command_relay.relay_permissions.policy_path', return_value=path):
             self.assertEqual(p.read_automation_settings(), {})
             for content in ('{"automation_permissions":{},"automation_permissions":{}}',
                             '{"a":{"x":1,"x":2}}', 'not-json', '[]', ' ' * 1_000_001):
@@ -81,3 +81,58 @@ class PermissionTests(unittest.TestCase):
                 self.assertEqual(p.read_automation_settings(), {})
             path.write_text('{"automation_permissions":{"version":1,"grants":[]}}', encoding='utf-8')
             self.assertEqual(p.read_automation_settings(), {p.KEY: {'version': 1, 'grants': []}})
+
+    def test_policy_isolated_from_legacy_preferences(self):
+        import json
+        from unittest.mock import patch
+        legacy = Path(self.tmp.name) / 'settings.json'
+        legacy.write_text(json.dumps(p.with_permission({}, 'squash_merge', enabled=True, **self.scope)), encoding='utf-8')
+        with patch('command_relay.relay_core.SETTINGS', legacy):
+            self.assertFalse(p.allowed(p.read_automation_settings(), 'squash_merge', **self.scope))
+            self.assertEqual(p.policy_snapshot(), {})
+
+    def test_save_revoke_and_stale_snapshot(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            grant = p.save_merge_permission({}, enabled=True, **self.scope)
+            self.assertEqual(p.policy_snapshot(), grant)
+            self.assertTrue(p.allowed(grant, 'squash_merge', **self.scope))
+            with self.assertRaises(ValueError):
+                p.revoke_all_permissions({})
+            revoked = p.save_merge_permission(grant, enabled=False, **self.scope)
+            self.assertFalse(p.allowed(p.policy_snapshot(), 'squash_merge', **self.scope))
+            with self.assertRaises(ValueError):
+                p.save_merge_permission(grant, enabled=True, **self.scope)
+            self.assertEqual(p.policy_snapshot(), revoked)
+
+    def test_changed_origin_and_invalid_policy_not_overwritten(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='other/repo'):
+            with self.assertRaises(ValueError):
+                p.save_merge_permission({}, enabled=True, **self.scope)
+            self.assertFalse(path.exists())
+            path.write_text('invalid', encoding='utf-8')
+            with self.assertRaises(ValueError):
+                p.revoke_all_permissions({})
+            self.assertEqual(path.read_text(), 'invalid')
+            self.assertEqual(p.read_automation_settings(), {})
+
+    def test_writer_conflict_and_revoke_all(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        lock = path.with_name('.automation-permissions.lock')
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            lock.touch()
+            with self.assertRaises(FileExistsError):
+                p.save_merge_permission({}, enabled=True, **self.scope)
+            self.assertTrue(lock.exists())
+            lock.unlink()
+            grant = p.save_merge_permission({}, enabled=True, **self.scope)
+            lock.touch()
+            self.assertFalse(p.allowed(p.read_automation_settings(), 'squash_merge', **self.scope))
+            lock.unlink()
+            p.revoke_all_permissions(grant)
+            self.assertFalse(p.allowed(p.policy_snapshot(), 'squash_merge', **self.scope))
+            self.assertFalse(lock.exists())

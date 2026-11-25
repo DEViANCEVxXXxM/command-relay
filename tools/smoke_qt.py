@@ -66,6 +66,31 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert copy.call_count == 3
         start.assert_not_called()
     print('Qt workbench accessibility checks passed (named controls and explicit copy modes; no commands executed).')
+    from command_relay import relay_permissions as permissions
+    import time
+    with tempfile.TemporaryDirectory() as tmp, patch.object(permissions, 'policy_path', return_value=Path(tmp)/'automation-permissions.json'), \
+            patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+        dialog = relay_qt.SafetyDialog(tmp, window)
+        def wait_safety():
+            deadline = time.monotonic() + 5
+            while dialog.busy and time.monotonic() < deadline:
+                app.processEvents(); time.sleep(.01)
+            assert not dialog.busy
+        dialog.refresh(); wait_safety()
+        assert not dialog.toggle.isChecked() and dialog.toggle.isEnabled()
+        assert not permissions.policy_path().exists()
+        dialog.toggle.setChecked(True)
+        with patch.object(dialog, 'confirm', return_value=False): dialog.save()
+        assert not dialog.toggle.isChecked() and not permissions.policy_path().exists()
+        dialog.toggle.setChecked(True)
+        with patch.object(dialog, 'confirm', return_value=True): dialog.save(); wait_safety()
+        assert dialog.toggle.isChecked()
+        assert permissions.allowed(permissions.read_automation_settings(), 'squash_merge', workspace=tmp, repository='owner/repo')
+        with patch.object(dialog, 'confirm', return_value=True): dialog.revoke_all(); wait_safety()
+        assert not dialog.toggle.isChecked()
+        assert not permissions.allowed(permissions.read_automation_settings(), 'squash_merge', workspace=tmp, repository='owner/repo')
+        dialog.reject()
+    print('Qt safety settings checks passed (default deny, cancel, opt-in, revoke; temporary policy only).')
     # Exercise the real pre-run gate without actually executing or journaling a command.
     with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
             patch.object(window, 'begin') as begin, patch.object(window, 'start_process') as start:

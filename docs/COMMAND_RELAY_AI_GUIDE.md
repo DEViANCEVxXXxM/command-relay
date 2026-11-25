@@ -145,7 +145,15 @@ use `wait_for_ci` (read-only), report the ready PR and let the human review and
 merge through the existing UI. A grant does not replace explicit task review.
 The scope is path-based; it is not a sandbox or protection against arbitrary
 PowerShell, Python or Git commands. Other future automatic operations remain
-unimplemented; a settings UI will be added separately.
+unimplemented. Open `More → Safety settings…` to review the resolved local
+workspace and GitHub origin. Automatic squash merge is off until the user
+explicitly enables it and confirms Apply. Revoke the selected grant or all
+saved grants from that dialog. The separate `automation-permissions.json`
+file is local and ignored by Git; ordinary `settings.json` writes do not affect
+it. Legacy grants in general settings are not migrated. A malformed policy
+fails closed; a stale writer lock requires manual inspection before removal.
+Never share or modify the policy or lock from an AI task. The UI does not
+perform a merge or grant permission merely by opening it.
 
 Use `wait_and_merge` with an explicit confirmation flag only after those checks
 and the user's review. Choose a finite polling budget and interval (the current
