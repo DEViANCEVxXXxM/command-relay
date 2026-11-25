@@ -3,9 +3,9 @@
 import time
 STARTUP_T0 = time.perf_counter()
 import sys, os, pathlib, json, codecs, tempfile, subprocess, threading, shutil, difflib, re, datetime
-from PySide6.QtCore import Qt, QProcess, QTimer, QUrl, Signal, QObject, QEvent
+from PySide6.QtCore import Qt, QProcess, QTimer, QUrl, Signal, QObject, QEvent, QSize, QRect
 from PySide6.QtGui import QColor, QFont, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat, QDesktopServices, QShortcut, QKeySequence, QPainter, QIcon
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog)
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog,QSizePolicy,QLayout,QStyle)
 from .relay_core import (
     ASSETS, GIT_ACTIONS, MARK, PACKET_LIMIT, REPORTS, ROOT, SETTINGS,
     atomic_text, compact_report, copy_mode, file_hash, git_args, load_input,
@@ -230,6 +230,66 @@ class SafetyDialog(QDialog):
         else: super().closeEvent(event)
 
 
+class AdaptiveActionRow(QLayout):
+    """Two natural-width groups; wrap the trailing group when space is tight."""
+    def __init__(self, leading, trailing):
+        super().__init__()
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(7)
+        self.addWidget(leading)
+        self.addWidget(trailing)
+
+    def addItem(self, item):
+        self._items.append(item)
+        self.invalidate()
+
+    def count(self): return len(self._items)
+    def itemAt(self, index): return self._items[index] if 0 <= index < self.count() else None
+    def takeAt(self, index): return self._items.pop(index) if 0 <= index < self.count() else None
+    def expandingDirections(self): return Qt.Orientation.Horizontal
+    def hasHeightForWidth(self): return True
+
+    def sizeHint(self):
+        sizes = [item.sizeHint() for item in self._items]
+        return QSize(sum(s.width() for s in sizes) + self.spacing() * max(0, len(sizes)-1),
+                     max((s.height() for s in sizes), default=0))
+
+    def minimumSize(self):
+        sizes = [item.minimumSize() for item in self._items]
+        return QSize(max((s.width() for s in sizes), default=0),
+                     max((s.height() for s in sizes), default=0))
+
+    def heightForWidth(self, width):
+        sizes = [item.sizeHint() for item in self._items]
+        if width >= self.sizeHint().width(): return self.sizeHint().height()
+        return sum(s.height() for s in sizes) + self.spacing() * max(0, len(sizes)-1)
+
+    def minimumHeightForWidth(self, width): return self.heightForWidth(width)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        if not self._items: return
+        direction = self.parentWidget().layoutDirection()
+        wrap = rect.width() < self.sizeHint().width()
+        y = rect.y()
+        for index, item in enumerate(self._items):
+            hint = item.sizeHint()
+            width = min(hint.width(), rect.width())
+            height = hint.height()
+            x = rect.x() if index == 0 else rect.x() + rect.width() - width
+            top = y if wrap else rect.y() + (rect.height()-height)//2
+            item.setGeometry(QStyle.visualRect(direction, rect, QRect(x, top, width, height)))
+            if wrap: y += height + self.spacing()
+
+
+def action_group():
+    widget = QWidget()
+    layout = QHBoxLayout(widget)
+    layout.setContentsMargins(0, 0, 0, 0)
+    return widget, layout
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle(f'Command Relay {VERSION} — Qt Workbench');self.resize(1180,740);self.setMinimumSize(850,560)
@@ -237,9 +297,13 @@ class App(QMainWindow):
         self.signals=WorkerSignals();self.signals.hashDone.connect(self.hash_done);self.signals.stopDone.connect(self.stop_done);self.signals.initialTail.connect(self.finish_initial_tail);self.initial_restore_pending=True;self.tool_busy=False;self.task_queue=[];self.signals.toolDone.connect(self.tool_done);self.copy_busy=False;self.signals.copyDone.connect(self.copy_done);self.warm_path=None;self.warm_result=None;self.warm_waiting=False;self.signals.warmDone.connect(self.warm_done)
         self.edit_controls=[];self.lib=pathlib.Path(self.settings.get('library') or ROOT/'scripts');
         central=QWidget();self.setCentralWidget(central);v=QVBoxLayout(central);v.setContentsMargins(12,9,12,8);v.setSpacing(7)
-        row=QHBoxLayout();h=QLabel('COMMAND RELAY');h.setStyleSheet('font-size:20px;font-weight:700;color:#f0f0f0');row.addWidget(h);row.addWidget(QLabel(f'{VERSION}  /  QT WORKBENCH'));row.addStretch();self.more=QPushButton('More');row.addWidget(self.more);self.more.setToolTip('Project tools, reports and settings');v.addLayout(row)
+        leading,row=action_group();h=QLabel('COMMAND RELAY');h.setStyleSheet('font-size:20px;font-weight:700;color:#f0f0f0');row.addWidget(h);row.addWidget(QLabel(f'{VERSION}  /  QT WORKBENCH'))
+        trailing,row=action_group();self.more=QPushButton('More');row.addWidget(self.more);self.more.setToolTip('Project tools, reports and settings')
+        self.header_row=AdaptiveActionRow(leading,trailing);v.addLayout(self.header_row)
         row=QHBoxLayout();row.addWidget(QLabel('WORKSPACE'));self.cwd=QLineEdit(self.settings.get('workspace') or os.getcwd());row.addWidget(self.cwd,1);self.edit_controls.append(self.cwd);self.btn(row,'Browse',self.browse,True);self.btn(row,'Profiles',self.profiles,True);v.addLayout(row)
-        row=QHBoxLayout();self.btn(row,'Open file',self.open,True);self.btn(row,'Paste / AI task',self.paste,True);row.addStretch();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run (Ctrl+Enter). Review the script and workspace first; identical task history is checked before execution. Commands use your account permissions.');v.addLayout(row)
+        leading,row=action_group();self.openbtn=self.btn(row,'Open file',self.open,True);self.pastebtn=self.btn(row,'Paste / AI task',self.paste,True)
+        trailing,row=action_group();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run (Ctrl+Enter). Review the script and workspace first; identical task history is checked before execution. Commands use your account permissions.')
+        self.command_row=AdaptiveActionRow(leading,trailing);v.addLayout(self.command_row)
         split=QSplitter(Qt.Orientation.Horizontal);self.main_split=split;split.setChildrenCollapsible(False);split.setOpaqueResize(True);split.setHandleWidth(5);v.addWidget(split,1)
         self.tabs=QTabWidget();self.tabs.setMinimumWidth(175);split.addWidget(self.tabs)
         w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(5,5,5,5);l.addWidget(QLabel('LIVE OUTPUT (visible tail)'));self.steps=QListWidget();l.addWidget(self.steps,3);l.addWidget(QLabel('COMMAND OUTLINE'));self.outline=QListWidget();l.addWidget(self.outline,2);self.tabs.addTab(w,'Steps');self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item));self.steps.itemActivated.connect(lambda item:self.jump(self.output,item));self.outline.itemActivated.connect(lambda item:self.jump(self.editor,item))
@@ -251,6 +315,13 @@ class App(QMainWindow):
         self.dense.hide();self.wrap.hide();r.addWidget(self.follow);self.btn(r,'Find',self.toggle_search)
         l.addLayout(r);self.searchbar=QWidget();r=QHBoxLayout(self.searchbar);r.setContentsMargins(0,0,0,0);self.search=QLineEdit();self.search.setPlaceholderText('Find in visible output');r.addWidget(self.search,1);self.find_previous=self.btn(r,'↑',lambda:self.find(True));self.find_next=self.btn(r,'↓',lambda:self.find(False));self.close_search=self.btn(r,'×',self.hide_search);l.addWidget(self.searchbar);self.searchbar.hide();self.search.returnPressed.connect(lambda:self.find(False));self.output=QPlainTextEdit();self.output.setReadOnly(True);self.output.setUndoRedoEnabled(False);self.output.setMaximumBlockCount(6000);self.output.setStyleSheet('QPlainTextEdit {font-family: Consolas, monospace; font-size: 13px;}');self.output_highlight=Highlight(self.output.document());l.addWidget(self.output,1);right.addWidget(w);right.setSizes([240,430]);right.setStretchFactor(1,1);self.wrap.toggled.connect(self.apply_wrap);self.dense.toggled.connect(self.reload_tail);self.apply_wrap()
         r=QHBoxLayout();self.detail=QLabel('Drop a script or import an AI task.');r.addWidget(self.detail,1);self.copy_button(r,lambda mode:self.copy_report(mode));self.btn(r,'History',self.history);v.addLayout(r)
+        # Keep the primary actions at their natural text-dependent width.
+        # Fixed is a size policy, not a pixel width; Qt recalculates sizeHint
+        # when the label, font or style changes.
+        for button in (self.more, self.runbtn):
+            sizing = button.sizePolicy()
+            sizing.setHorizontalPolicy(QSizePolicy.Policy.Fixed)
+            button.setSizePolicy(sizing)
         self.configure_accessibility()
         self.build_more_menu()
         self.activity=ActivityBar(self);v.addWidget(self.activity)

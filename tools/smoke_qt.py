@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt, QPoint, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
@@ -17,6 +17,14 @@ from command_relay.relay_terms import confirm_usage_terms, disclaimer_text
 
 app = QApplication([])
 root = Path(__file__).resolve().parents[1]
+
+def settle_layout():
+    # Nested layout requests may be posted by an earlier layout pass.
+    # Match the bounded event processing verified by diagnostic task 041d.
+    for _ in range(4):
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest.value)
+        app.processEvents()
+
 
 # Exercise the real modal dialog without opening a workspace or running commands.
 for action, expected in [('terms_decline', False), ('close', False), ('terms_agree', True)]:
@@ -84,6 +92,39 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     window.sidebar_action.trigger(); assert window.tabs.isHidden() == initial
     window.sidebar_action.trigger(); assert window.sidebar_action.isChecked() == initial
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
+    # Reproduce audit 041: long labels, compact window, both layout directions.
+    original_size = window.size()
+    original_direction = window.layoutDirection()
+    original_labels = (window.runbtn.text(), window.more.text())
+    try:
+        for direction in (Qt.LayoutDirection.LeftToRight, Qt.LayoutDirection.RightToLeft):
+            window.setLayoutDirection(direction)
+            window.runbtn.setText('▶ Run commands / Erweiterte Befehle ausführen')
+            window.more.setText('More / Weitere Einstellungen')
+            for width, height in ((850, 560), (1180, 740)):
+                window.resize(width, height)
+                settle_layout()
+                for button in (window.openbtn, window.pastebtn, window.stopbtn, window.runbtn, window.more):
+                    assert button.width() >= button.sizeHint().width(), (button.text(), button.width(), button.sizeHint().width())
+                    assert window.rect().contains(button.rect().translated(button.mapTo(window, QPoint(0, 0))))
+                for row in (window.header_row, window.command_row):
+                    a, b = (row.itemAt(i).geometry() for i in range(2))
+                    assert not a.intersects(b), (a, b)
+                    assert row.geometry().contains(a) and row.geometry().contains(b), (row.geometry(), a, b)
+                    if row.geometry().width() < row.sizeHint().width():
+                        assert b.top() > a.bottom(), (a, b)
+                assert window.width() <= width and window.height() <= height
+    finally:
+        window.runbtn.setText(original_labels[0])
+        window.more.setText(original_labels[1])
+        window.setLayoutDirection(original_direction)
+        window.resize(original_size)
+        settle_layout()
+    for row in (window.header_row, window.command_row):
+        if row.geometry().width() >= row.sizeHint().width():
+            a, b = (row.itemAt(i).geometry() for i in range(2))
+            assert a.top() <= b.bottom() and b.top() <= a.bottom(), (a, b)
+    print('Qt compact action layout checks passed (long labels, LTR and RTL, adaptive groups).')
     from command_relay import relay_permissions as permissions
     import time
     with tempfile.TemporaryDirectory() as tmp, patch.object(permissions, 'policy_path', return_value=Path(tmp)/'automation-permissions.json'), \
