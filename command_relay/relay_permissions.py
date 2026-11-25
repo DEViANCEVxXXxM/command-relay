@@ -134,6 +134,9 @@ def audit_history(snapshot):
                     or not isinstance(e['workspace_sha256'], str)
                     or not re.fullmatch(r'[0-9a-f]{64}', e['workspace_sha256'])):
                 raise ValueError('Invalid permission event scope')
+        elif e['operation'] in ('grant_update_install', 'revoke_update_install'):
+            if e['count'] != 1 or e['repository'] is not None or e['workspace_sha256'] is not None:
+                raise ValueError('Invalid update permission event scope')
         elif e['operation'] != 'revoke_all' or e['repository'] is not None or e['workspace_sha256'] is not None:
             raise ValueError('Invalid permission event operation')
     return value
@@ -143,8 +146,8 @@ def _record_change(current, updated, operation):
     old, new = _grants(current), _grants(updated)
     if old == new:
         return current
-    changed = new - old if operation == 'grant' else old - new
-    if operation == 'revoke_all':
+    changed = new - old if operation in ('grant', 'grant_update_install') else old - new
+    if operation in ('revoke_all', 'grant_update_install', 'revoke_update_install'):
         repository, workspace_hash = None, None
     else:
         _, workspace, repository = next(iter(changed))
@@ -168,6 +171,8 @@ def audit_text(snapshot):
              f"Older entries discarded: {history['dropped']}", '']
     for e in reversed(history['events']):
         scope = (e['repository'] + ' / workspace ' + e['workspace_sha256'][:12]) if e['repository'] else 'all workspaces'
+        if e['operation'] in ('grant_update_install', 'revoke_update_install'):
+            scope = 'this application installation'
         lines.append(f"{e['utc']}  {e['operation']}  ({e['count']})  {scope}")
     if not history['events']:
         lines.append('No recorded changes. Existing grants may predate this history.')
@@ -230,6 +235,43 @@ def save_merge_permission(expected, *, workspace, repository, enabled):
         return with_permission(current, 'squash_merge', enabled=enabled,
                                workspace=workspace, repository=repository)
     return _save_policy(expected, change, 'grant' if enabled else 'revoke')
+
+
+def update_permission_scope(root):
+    """Resolve the running portable installation, never the selected workspace.
+
+    Only a local policy belonging to this application root is eligible. The
+    supported launcher already holds the installation lock during GUI use.
+    This does not certify the installed package or authorize an installation.
+    """
+    from .relay_updates import _checked_path, _require_no_pending_transaction
+    root = Path(root)
+    if not root.is_absolute() or '..' in root.parts or root.parent == root:
+        raise ValueError('Expected absolute installation directory')
+    if policy_path() != root / 'automation-permissions.json':
+        raise ValueError('Policy does not belong to this installation')
+    for parent in (*reversed(root.parents), root):
+        _checked_path(parent, directory=True)
+        if any(entry.name.rstrip(' .').casefold() == '.git' for entry in parent.iterdir()):
+            raise ValueError('Source checkout cannot opt in to installation')
+    _checked_path(root / 'Start.pyw', directory=False)
+    _require_no_pending_transaction(root)
+    for entry in root.iterdir():
+        name = entry.name.rstrip(' .').casefold()
+        if name in ('automation-permissions.json', '.automation-permissions.lock'):
+            if entry.name != name:
+                raise ValueError('Unexpected policy filename')
+            _checked_path(entry, directory=False)
+    return root
+
+
+def save_update_permission(expected, *, root, enabled):
+    """Persist a confirmed application-local grant, never install anything."""
+    root = update_permission_scope(root)
+    def change(current):
+        update_permission_scope(root)
+        return with_permission(current, 'update_install', enabled=enabled)
+    return _save_policy(expected, change, 'grant_update_install' if enabled else 'revoke_update_install')
 
 
 def revoke_all_permissions(expected):
