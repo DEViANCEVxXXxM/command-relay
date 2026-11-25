@@ -1202,6 +1202,8 @@ class PreparedUpdateHandoff:
     original_folder: Path
     target_folder: Path
     plan: InstallPlan
+    original_sha256: str
+    target_sha256: str
 
 
 def _write_handoff_package(folder, signed):
@@ -1254,9 +1256,110 @@ def _prepare_update_handoff_locked(root, original, target):
                 raise UpdateError('Prepared handoff package differs.')
         plan_installation(updater, reopened_old, reopened_new)
         _check_transaction_layout(updater)
-        return PreparedUpdateHandoff(directory, updater, original_folder, target_folder, plan)
+        return PreparedUpdateHandoff(directory, updater, original_folder, target_folder, plan,
+                                     original.download.sha256, target.download.sha256)
     except OSError:
         raise UpdateError('Unable to prepare external handoff; preserve any partial bundle.') from None
+
+
+def _verify_handoff_launch_locked(handoff, *, action):
+    """Authenticate the external code and assets before starting any interpreter."""
+    if not isinstance(handoff, PreparedUpdateHandoff) or action not in ('inspect', 'install', 'recover'):
+        raise UpdateError('Invalid external handoff or action.')
+    root, directory = handoff.plan.root, handoff.directory
+    if (directory.parent != root.parent or not directory.name.startswith('.relay-update-handoff-')
+            or handoff.updater_root != directory / 'updater'
+            or handoff.original_folder != directory / 'original'
+            or handoff.target_folder != directory / 'target'):
+        raise UpdateError('Unexpected external handoff layout.')
+    _checked_path(directory, directory=True)
+    if {p.name for p in directory.iterdir()} != {'updater', 'original', 'target'}:
+        raise UpdateError('Unexpected entry in external handoff.')
+    original = load_local_signed_package(handoff.original_folder, VERSION, current='0.0.0')
+    target = load_local_signed_package(handoff.target_folder, handoff.plan.target, current=VERSION)
+    if (original.download.sha256, target.download.sha256) != (handoff.original_sha256, handoff.target_sha256):
+        raise UpdateError('Handoff package differs from prepared package.')
+    old, new, _ = _recovery_packages(original, target)
+    if old['requirements.txt'] != new['requirements.txt']:
+        raise UpdateError('Dependency changes require manual installation.')
+    plan_installation(handoff.updater_root, original, target)
+    # A signed file set is insufficient if an extra Python module or bytecode
+    # can shadow an import. Deny every extra entry in the executable copy.
+    directories = {}
+    for name in old:
+        parts = name.split('/')
+        for i, part in enumerate(parts):
+            directories.setdefault('/'.join(parts[:i]), set()).add(part)
+    for relative, names in directories.items():
+        folder = handoff.updater_root / relative
+        _checked_path(folder, directory=True)
+        if {entry.name for entry in folder.iterdir()} != names:
+            raise UpdateError('Unexpected entry in external updater code.')
+    if action == 'recover':
+        _check_transaction_layout(root)
+        _checked_path(root / UPDATE_TRANSACTION_NAME, directory=True)
+        intent = _pending_intent(original, target, old, new)
+        if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
+            raise UpdateError('Pending transaction intent differs.')
+    else:
+        _require_no_pending_transaction(root)
+        if plan_installation(root, original, target) != handoff.plan:
+            raise UpdateError('Installation differs from prepared plan.')
+        _check_transaction_layout(root)
+        if action == 'install':
+            _require_install_permission(root)
+
+
+def launch_prepared_updater(handoff, *, action):
+    """Launch a reauthenticated external updater, after the GUI lock is released.
+
+    Use the current trusted Python runtime (not code in the destination), with
+    isolated imports and no shell. The child reacquires the lock, rechecks its
+    inputs, and requires interactive consent for writes. Launch is not consent
+    or a transaction result. The cooperative check-to-launch gap is not a
+    hostile same-user boundary. No automatic restart or GUI shutdown here.
+    """
+    import os
+    import subprocess
+    import sys
+    if not isinstance(handoff, PreparedUpdateHandoff):
+        raise UpdateError('Invalid external handoff.')
+    root = handoff.plan.root
+    try:
+        with installation_lock(root):
+            _verify_handoff_launch_locked(handoff, action=action)
+            executable = Path(sys.executable)
+            if not executable.is_absolute():
+                raise UpdateError('Trusted Python executable unavailable.')
+            if os.name == 'nt' and executable.name.casefold() == 'pythonw.exe':
+                executable = executable.with_name('python.exe')
+            # Preserve the invocation path for a virtual environment, while
+            # also checking the resolved executable and active runtime prefix.
+            resolved = executable.resolve(strict=True)
+            if not resolved.is_file():
+                raise UpdateError('Trusted Python executable unavailable.')
+            runtime_paths = (executable, resolved, Path(sys.prefix).resolve(strict=True))
+            if any(runtime.is_relative_to(p.resolve(strict=True))
+                   for p in (root, handoff.directory) for runtime in runtime_paths):
+                raise UpdateError('Python executable must be outside the installation and handoff.')
+            if action != 'inspect' and os.name != 'nt' and not (
+                    sys.stdin is not None and sys.stderr is not None
+                    and sys.stdin.isatty() and sys.stderr.isatty()):
+                raise UpdateError('Interactive terminal required for external updater.')
+            # -I ignores PYTHONPATH, user site, and the working directory;
+            # add only the authenticated tree explicitly, and do not write pyc.
+            bootstrap = ("import sys, runpy; sys.path.insert(0, sys.argv.pop(1)); "
+                         "runpy.run_module('command_relay.relay_updates', run_name='__main__')")
+            argv = [str(executable), '-I', '-B', '-c', bootstrap, str(handoff.updater_root),
+                    '--' + action, '--root', str(root), '--original', str(handoff.original_folder),
+                    '--target', str(handoff.target_folder), '--target-version', handoff.plan.target]
+        # Do not spawn while holding the lock: the child must acquire it itself.
+        # If another application wins the race, the child fails closed.
+        return subprocess.Popen(argv, cwd=str(handoff.updater_root), shell=False,
+                                close_fds=True, creationflags=(subprocess.CREATE_NEW_CONSOLE
+                                    if os.name == 'nt' and action != 'inspect' else 0))
+    except (OSError, TypeError, ValueError) as exc:
+        raise UpdateError('Unable to launch external updater; preserve the handoff bundle.') from None
 
 
 def _require_install_permission(root):
