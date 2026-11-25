@@ -80,7 +80,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert window.safety_action in window.settings_menu.actions()
     assert window.safety_action not in window.more.menu().actions()
     actions = {a.objectName(): a for a in window.settings_menu.actions() if a.objectName()}
-    assert set(actions) == {'settings_safety', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
+    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
     assert actions['settings_safety'].isEnabled()
     for name, control in [('settings_wrap', window.wrap), ('settings_dense', window.dense)]:
         action = actions[name]
@@ -92,6 +92,32 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     window.sidebar_action.trigger(); assert window.tabs.isHidden() == initial
     window.sidebar_action.trigger(); assert window.sidebar_action.isChecked() == initial
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
+    from command_relay import relay_updates as updates
+    import time
+    data = {'id': 1, 'tag_name': 'v4.3.0', 'draft': False, 'prerelease': False,
+            'assets': [{'id': i, 'name': 'command-relay-v4.3.0-windows' + ext,
+                        'state': 'uploaded', 'size': 64, 'digest': 'sha256:' + 'a' * 64}
+                       for i, ext in enumerate(('.zip', '.sha256', '.manifest.json', '.manifest.sig'), 2)]}
+    info = updates.parse_latest(data, VERSION)
+    with patch.object(updates, 'check_latest', side_effect=[info, updates.UpdateError('mock failure')]) as check, \
+            patch.object(updates, 'download_signed_update') as download:
+        dialog = relay_qt.UpdatesDialog(window)
+        dialog.show(); app.processEvents()
+        check.assert_not_called()
+        for text in ('NOT verified', 'Not verified'):
+            dialog.check_button.click()
+            assert not dialog.check_button.isEnabled()
+            deadline = time.monotonic() + 5
+            while dialog.results is not None and time.monotonic() < deadline:
+                app.processEvents(); time.sleep(.01)
+            assert dialog.results is None and dialog.check_button.isEnabled()
+            assert text in dialog.trust.text()
+        assert 'Unavailable' in dialog.latest.text()
+        assert 'failed' in dialog.status.text()
+        assert check.call_count == 2
+        download.assert_not_called()
+        dialog.reject(); dialog.deleteLater(); app.processEvents()
+    print('Qt updates settings checks passed (explicit metadata check, trust distinction and failure; mocked network).')
     # Reproduce audit 041: long labels, compact window, both layout directions.
     original_size = window.size()
     original_direction = window.layoutDirection()

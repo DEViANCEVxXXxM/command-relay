@@ -1524,3 +1524,28 @@ class StandaloneTransactionTests(unittest.TestCase):
         (folder/(stem+'.manifest.sig')).write_bytes(package.signature)
         self.assertEqual(self.run_mode('install', 'INSTALL 4.10.0\n')[0], 1)
         self.assertFalse(self.marker.exists())
+
+
+class ReleasePresentationTests(unittest.TestCase):
+    def test_newer_unsigned(self):
+        status, trust = u.describe_release(u.parse_latest(release('4.3.0'), '4.2.0'))
+        self.assertIn('Newer', status)
+        self.assertIn('unavailable', trust)
+
+    def test_equal_and_older(self):
+        self.assertIn('up to date', u.describe_release(u.parse_latest(release('4.2.0'), '4.2.0'))[0])
+        self.assertIn('older', u.describe_release(u.parse_latest(release('4.1.0'), '4.2.0'))[0])
+
+    def test_signature_assets_are_not_verified(self):
+        data = release('4.3.0')
+        stem = 'command-relay-v4.3.0-windows'
+        for i, ext in enumerate(('.manifest.json', '.manifest.sig'), 4):
+            data['assets'].append({'id': i, 'name': stem + ext, 'state': 'uploaded',
+                                   'size': 64, 'digest': 'sha256:' + 'a' * 64})
+        with patch.object(u, 'download_signed_update') as download:
+            self.assertIn('NOT verified', u.describe_release(u.parse_latest(data, '4.2.0'))[1])
+            download.assert_not_called()
+
+    def test_invalid_input(self):
+        with self.assertRaises(u.UpdateError):
+            u.describe_release(None)
