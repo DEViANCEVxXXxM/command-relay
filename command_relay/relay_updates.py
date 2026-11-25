@@ -218,3 +218,96 @@ def download_update(info):
         raise UpdateError('Release checksum file does not match archive metadata.')
     archive = _download_asset(info, info.archive)
     return DownloadedUpdate(info, archive, hashlib.sha256(archive).hexdigest())
+
+
+# Inspection is deliberately separate from installation or publisher trust.
+MAX_PACKAGE_FILES = 256
+MAX_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_PACKAGE_BYTES = 32 * 1024 * 1024
+_PACKAGE_COMPONENT = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}')
+_RESERVED_NAMES = frozenset(('CON', 'PRN', 'AUX', 'NUL',
+                             *(f'COM{i}' for i in range(10)),
+                             *(f'LPT{i}' for i in range(10))))
+
+
+def _package_path(name):
+    if not isinstance(name, str) or len(name) > 240:
+        return False
+    return all(_PACKAGE_COMPONENT.fullmatch(part) and not part.endswith('.')
+               and part.split('.')[0].upper() not in _RESERVED_NAMES
+               for part in name.split('/'))
+
+
+def inspect_package(download, expected_files):
+    """Check ZIP membership and content hashes without extracting any files.
+
+    expected_files must be a separately trusted mapping of relative paths to
+    lowercase SHA-256 hashes (not data taken from the downloaded ZIP itself).
+    Returns a sorted tuple of verified relative paths, not install authority.
+    Current format accepts regular files only; no new paths are implicitly trusted.
+    """
+    import io
+    import stat
+    import zipfile
+    import zlib
+
+    if not isinstance(download, DownloadedUpdate) or not isinstance(download.archive, bytes):
+        raise UpdateError('Invalid downloaded package.')
+    _validate_download(download.info)
+    raw = download.archive
+    actual = hashlib.sha256(raw).hexdigest()
+    if (len(raw) != download.info.archive.size or actual != download.sha256
+            or 'sha256:' + actual != download.info.archive.digest):
+        raise UpdateError('Downloaded package integrity changed.')
+    if not isinstance(expected_files, dict) or not 0 < len(expected_files) <= MAX_PACKAGE_FILES:
+        raise UpdateError('Invalid expected package manifest.')
+    expected = dict(expected_files)
+    if any(not _package_path(name) or not isinstance(digest, str)
+           or not re.fullmatch(r'[0-9a-f]{64}', digest) for name, digest in expected.items()):
+        raise UpdateError('Invalid expected package manifest.')
+    folded = {name.lower() for name in expected}
+    if len(folded) != len(expected) or any(
+            '/'.join(name.split('/')[:i]) in folded
+            for name in folded for i in range(1, len(name.split('/')))):
+        raise UpdateError('Ambiguous expected package paths.')
+    prefix = f'command-relay-v{download.info.latest}-windows/'
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = archive.infolist()
+            if len(members) != len(expected) or len(members) > MAX_PACKAGE_FILES:
+                raise UpdateError('Unexpected package file count.')
+            names = set()
+            total = 0
+            for member in members:
+                name = member.filename
+                if member.orig_filename != name or not name.startswith(prefix):
+                    raise UpdateError('Invalid package member path.')
+                relative = name[len(prefix):]
+                if relative not in expected or relative in names:
+                    raise UpdateError('Unexpected or duplicate package member.')
+                names.add(relative)
+                if (member.is_dir() or member.create_system != 3
+                        or stat.S_IFMT(member.external_attr >> 16) != stat.S_IFREG
+                        or member.external_attr & 0x10
+                        or member.flag_bits & ~0x800
+                        or member.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED)):
+                    raise UpdateError('Unsupported package member type.')
+                if not 0 <= member.file_size <= MAX_MEMBER_BYTES:
+                    raise UpdateError('Package member exceeds size limit.')
+                total += member.file_size
+                if total > MAX_PACKAGE_BYTES:
+                    raise UpdateError('Package exceeds expanded size limit.')
+            if names != set(expected):
+                raise UpdateError('Package membership differs from manifest.')
+            for member in members:
+                with archive.open(member, 'r') as stream:
+                    data = stream.read(member.file_size + 1)
+                if (len(data) != member.file_size or
+                        hashlib.sha256(data).hexdigest() != expected[member.filename[len(prefix):]]):
+                    raise UpdateError('Package member content differs from manifest.')
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, OSError, EOFError, RuntimeError,
+            NotImplementedError, ValueError, zlib.error) as exc:
+        if isinstance(exc, UpdateError):
+            raise
+        raise UpdateError('Invalid or damaged release ZIP.') from None
+    return tuple(sorted(expected))
