@@ -1,5 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 import copy
+import pathlib
+import tempfile
 import subprocess
 import unittest
 from unittest.mock import patch, Mock
@@ -130,57 +132,117 @@ class GitHubTests(unittest.TestCase):
         options = dict(head='feat/test', head_sha=B, base='main', base_sha=A,
                        required_checks=['CI'], confirmed=True, timeout=30, interval=5)
         options.update(overrides)
-        return client.wait_and_merge(42, **options)
+        with patch.object(client, '_require_automation_merge'):
+            return client.wait_and_merge(42, **options)
 
     def test_automation_requires_authorization_and_valid_policy(self):
-        client = self.client(); client.inspect = Mock(); client.squash_merge = Mock()
+        client = self.client(); client.inspect = Mock(); client._squash_merge = Mock()
         for overrides in ({'confirmed': False}, {'required_checks': []}, {'required_checks': ['CI', 'CI']},
                           {'timeout': 0}, {'interval': 0}, {'head_sha': 'bad'}):
             with self.assertRaises(GitHubError): self.automation(client, **overrides)
-        client.inspect.assert_not_called(); client.squash_merge.assert_not_called()
+        client.inspect.assert_not_called(); client._squash_merge.assert_not_called()
 
     def test_automation_waits_then_merges_once(self):
         client = self.client(); pending = copy.deepcopy(DATA)
         pending['statusCheckRollup'][0]['status'] = 'IN_PROGRESS'
         ready = parse_pr(REPO, 42, DATA, META)
         client.inspect = Mock(side_effect=[parse_pr(REPO, 42, pending, META), ready])
-        client.squash_merge = Mock(return_value=C); progress = Mock()
+        client._squash_merge = Mock(return_value=C); progress = Mock()
         with patch('command_relay.relay_github.time.sleep') as sleep:
             self.assertEqual(self.automation(client, progress=progress), C)
-        sleep.assert_called_once(); client.squash_merge.assert_called_once_with(ready, confirmed=True)
+        sleep.assert_called_once(); client._squash_merge.assert_called_once()
+        self.assertEqual(client._squash_merge.call_args.args, (ready,))
+        self.assertTrue(client._squash_merge.call_args.kwargs['confirmed'])
         self.assertEqual([call.args for call in progress.call_args_list], [('WAITING_FOR_CI', 0, 1), ('CI_READY', 1, 1)])
 
     def test_automation_stops_on_changed_identity_or_closed_pr(self):
-        client = self.client(); client.squash_merge = Mock()
+        client = self.client(); client._squash_merge = Mock()
         for changes in ({'headRefOid': C}, {'baseRefOid': C}, {'headRefName': 'other'},
                         {'baseRefName': 'other'}, {'state': 'MERGED'}, {'isDraft': True},
                         {'isCrossRepository': True}, {'reviewDecision': 'REVIEW_REQUIRED'}):
             client.inspect = Mock(return_value=parse_pr(REPO, 42, dict(DATA, **changes), META))
             with self.assertRaises(GitHubError): self.automation(client)
-        client.squash_merge.assert_not_called()
+        client._squash_merge.assert_not_called()
 
     def test_automation_stops_on_failed_or_skipped_required_check(self):
-        client = self.client(); client.squash_merge = Mock()
+        client = self.client(); client._squash_merge = Mock()
         for state in ('FAILURE', 'CANCELLED', 'ACTION_REQUIRED', 'NEUTRAL', 'SKIPPED'):
             data = copy.deepcopy(DATA); data['statusCheckRollup'][0]['conclusion'] = state
             client.inspect = Mock(return_value=parse_pr(REPO, 42, data, META))
             with self.assertRaises(GitHubError): self.automation(client)
-        client.squash_merge.assert_not_called()
+        client._squash_merge.assert_not_called()
 
     def test_automation_missing_expected_check_never_merges(self):
-        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client.squash_merge = Mock()
+        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client._squash_merge = Mock()
         with patch('command_relay.relay_github.time.monotonic', side_effect=[0, 0, 30, 30]):
             with self.assertRaisesRegex(GitHubError, 'deadline'): self.automation(client, required_checks=['not present'])
-        client.squash_merge.assert_not_called()
+        client._squash_merge.assert_not_called()
 
     def test_automation_deadline_even_if_ready_after_poll(self):
-        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client.squash_merge = Mock()
+        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client._squash_merge = Mock()
         with patch('command_relay.relay_github.time.monotonic', side_effect=[0, 0, 31, 31]):
             with self.assertRaisesRegex(GitHubError, 'deadline'): self.automation(client)
-        client.squash_merge.assert_not_called()
+        client._squash_merge.assert_not_called()
 
     def test_automation_never_retries_unknown_merge(self):
         client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META))
-        client.squash_merge = Mock(side_effect=MergeUnknown('unknown'))
+        client._squash_merge = Mock(side_effect=MergeUnknown('unknown'))
         with self.assertRaises(MergeUnknown): self.automation(client)
-        client.inspect.assert_called_once(); client.squash_merge.assert_called_once()
+        client.inspect.assert_called_once(); client._squash_merge.assert_called_once()
+
+
+    def test_read_only_wait_without_opt_in(self):
+        client = self.client(); ready = parse_pr(REPO, 42, DATA, META)
+        client.inspect = Mock(return_value=ready); client._api = Mock()
+        self.assertEqual(client.wait_for_ci(42, head='feat/test', head_sha=B, base='main',
+                                           base_sha=A, required_checks=['CI']), ready)
+        client._api.assert_not_called()
+
+    def test_automatic_merge_denied_without_scoped_permission(self):
+        client = self.client(); client.inspect = Mock(); client._api = Mock()
+        with tempfile.TemporaryDirectory() as d, patch('command_relay.relay_core.SETTINGS', pathlib.Path(d)/'missing.json'):
+            with self.assertRaisesRegex(GitHubError, 'disabled'):
+                client.wait_and_merge(42, head='feat/test', head_sha=B, base='main', base_sha=A,
+                                      required_checks=['CI'], confirmed=True, workspace=d)
+        client.inspect.assert_not_called(); client._api.assert_not_called()
+
+    def test_automatic_merge_scoped_grant_and_revocation_before_put(self):
+        import json
+        from command_relay.relay_permissions import with_permission
+        client = self.client(); ready = parse_pr(REPO, 42, DATA, META)
+        client._api = Mock(); options = dict(head='feat/test', head_sha=B, base='main', base_sha=A,
+                                             required_checks=['CI'], confirmed=True)
+        with tempfile.TemporaryDirectory() as d:
+            settings = pathlib.Path(d)/'settings.json'
+            grant = with_permission({}, 'squash_merge', enabled=True, workspace=d, repository=REPO)
+            settings.write_text(json.dumps(grant), encoding='utf-8')
+            with patch('command_relay.relay_core.SETTINGS', settings), patch('command_relay.relay_github.workspace_repo', return_value=REPO):
+                def inspect(number):
+                    if client.inspect.call_count == 2:
+                        settings.write_text('{}', encoding='utf-8')
+                    return ready
+                client.inspect = Mock(side_effect=inspect)
+                with self.assertRaisesRegex(GitHubError, 'disabled'):
+                    client.wait_and_merge(42, workspace=d, **options)
+                self.assertEqual(client.inspect.call_count, 2)
+                client._api.assert_not_called()
+                settings.write_text(json.dumps(grant), encoding='utf-8')
+                client.inspect = Mock(return_value=ready)
+                client._api = Mock(side_effect=[{'merged': True, 'sha': C}, {'number': 42, 'merged': True,
+                    'merge_commit_sha': C, 'head': {'sha': B}, 'base': {'ref': 'main', 'repo': {'full_name': REPO}}}])
+                self.assertEqual(client.wait_and_merge(42, workspace=d, **options), C)
+                self.assertEqual(client._api.call_count, 2)
+
+    def test_automatic_merge_wrong_origin_denied(self):
+        import json
+        from command_relay.relay_permissions import with_permission
+        client = self.client(); client.inspect = Mock(); client._api = Mock()
+        with tempfile.TemporaryDirectory() as d:
+            settings = pathlib.Path(d)/'settings.json'
+            settings.write_text(json.dumps(with_permission({}, 'squash_merge', enabled=True,
+                                workspace=d, repository=REPO)), encoding='utf-8')
+            with patch('command_relay.relay_core.SETTINGS', settings), patch('command_relay.relay_github.workspace_repo', return_value='other/repo'):
+                with self.assertRaisesRegex(GitHubError, 'origin'):
+                    client.wait_and_merge(42, head='feat/test', head_sha=B, base='main', base_sha=A,
+                                          required_checks=['CI'], confirmed=True, workspace=d)
+        client.inspect.assert_not_called(); client._api.assert_not_called()
