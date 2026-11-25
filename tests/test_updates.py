@@ -1588,3 +1588,101 @@ class VerifyDisplayTests(unittest.TestCase):
             with self.assertRaises(u.UpdateError):
                 u.verify_release_for_display(bad)
         opener.assert_not_called()
+
+
+class HandoffPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.f = InstallPlanTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.root = self.f.root
+
+    def prepare(self):
+        return u.prepare_update_handoff(self.root, self.f.old, self.f.new)
+
+    def bundles(self):
+        return list(self.root.parent.glob('.relay-update-handoff-*'))
+
+    def snapshot(self):
+        return {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*')
+                if p.is_file() and p.name != u.UPDATE_LOCK_NAME}
+
+    def test_external_bundle_uses_signed_original_and_retains_both_packages(self):
+        before = self.snapshot()
+        result = self.prepare()
+        self.assertEqual(result.directory.parent, self.root.parent)
+        self.assertEqual(result.plan.replace, ('Start.pyw',))
+        self.assertEqual({p.relative_to(result.updater_root).as_posix(): p.read_bytes()
+                          for p in result.updater_root.rglob('*') if p.is_file()}, self.f.files)
+        self.assertEqual(len(list(result.original_folder.iterdir())), 4)
+        self.assertEqual(len(list(result.target_folder.iterdir())), 4)
+        plan = u.inspect_local_installation(self.root, result.original_folder,
+                                            result.target_folder, '4.10.0')
+        self.assertEqual(plan, result.plan)
+        self.assertEqual(before, self.snapshot())
+        self.assertFalse((self.root / u.UPDATE_TRANSACTION_NAME).exists())
+
+    def test_distinct_bundles_never_overwrite(self):
+        first = self.prepare()
+        second = self.prepare()
+        self.assertNotEqual(first.directory, second.directory)
+        self.assertTrue(first.original_folder.is_dir())
+
+    def test_busy_or_pending_denied_before_bundle(self):
+        with u.installation_lock(self.root), self.assertRaises(u.UpdateError):
+            self.prepare()
+        (self.root / u.UPDATE_TRANSACTION_NAME).mkdir()
+        with self.assertRaises(u.RecoveryRequired):
+            self.prepare()
+        self.assertFalse(self.bundles())
+
+    def test_bad_signature_or_modified_original_denied(self):
+        from dataclasses import replace
+        old = self.f.old
+        self.f.old = replace(old, signature=b'x'*64)
+        with self.assertRaises(u.UpdateError):
+            self.prepare()
+        self.f.old = old
+        (self.root / 'Start.pyw').write_bytes(b'changed')
+        with self.assertRaises(u.UpdateError):
+            self.prepare()
+        self.assertFalse(self.bundles())
+
+    def test_dependency_change_or_unknown_file_denied(self):
+        original = self.f.new
+        self.f.new = self.f.package(u.VERSION, '4.10.0', dict(self.f.new_files, **{'requirements.txt': b'changed'}))
+        with self.assertRaisesRegex(u.UpdateError, 'Dependency changes'):
+            self.prepare()
+        self.f.new = original
+        (self.root / 'unexpected.py').write_bytes(b'unknown')
+        with self.assertRaises(u.UpdateError):
+            self.prepare()
+        self.assertFalse(self.bundles())
+
+    def test_partial_failure_preserves_installation_and_releases_lock(self):
+        before = self.snapshot()
+        write = u._write_rehearsal_file
+        def fail(path, data):
+            if path.suffix == '.sig':
+                raise OSError('simulated write failure')
+            write(path, data)
+        with patch.object(u, '_write_rehearsal_file', side_effect=fail):
+            with self.assertRaisesRegex(u.UpdateError, 'partial bundle'):
+                self.prepare()
+        self.assertEqual(len(self.bundles()), 1)
+        self.assertEqual(before, self.snapshot())
+        with u.startup_installation_guard(self.root):
+            pass
+        self.assertTrue(self.prepare().target_folder.is_dir())
+
+    def test_tampered_copy_denied_during_readback(self):
+        write = u._write_rehearsal_file
+        def tamper(path, data):
+            write(path, data)
+            if path.name == 'Start.pyw':
+                path.write_bytes(b'tampered')
+        with patch.object(u, '_write_rehearsal_file', side_effect=tamper):
+            with self.assertRaisesRegex(u.UpdateError, 'differs from signed package'):
+                self.prepare()
+        self.assertEqual(len(self.bundles()), 1)
+        self.assertEqual((self.root / 'Start.pyw').read_bytes(), self.f.files['Start.pyw'])
