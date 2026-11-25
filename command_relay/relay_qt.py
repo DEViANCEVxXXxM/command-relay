@@ -46,7 +46,7 @@ class NeutralChrome(QObject):
         return False
 
 
-STYLE='''QWidget {background:#181818;color:#d4d4d4;font-family:"Segoe UI";font-size:12px} QLineEdit,QPlainTextEdit,QListWidget,QTableWidget,QComboBox {background:#202020;border:1px solid #333;selection-background-color:#264f78} QPlainTextEdit {border:0} QPushButton {background:#292929;border:0;border-radius:3px;padding:6px 12px} QPushButton:hover {background:#3a3a3a} QPushButton:disabled {color:#666;background:#222} QPushButton#run {background:#0078d4;color:white} QPushButton#run:disabled {background:#263744;color:#888} QMenu {background:#252526;border:1px solid #444;padding:4px} QMenu::item {padding:7px 24px 7px 12px} QMenu::item:selected {background:#264f78} QMenu::item:disabled {color:#777} QMenu::separator {height:1px;background:#414141;margin:4px 6px} QTabWidget::pane {border:0} QTabBar::tab {padding:7px 12px;background:#252526;color:#aaa} QTabBar::tab:selected {background:#181818;color:white} QSplitter::handle {background:#333} QSplitter::handle:hover {background:#0078d4} QHeaderView::section {background:#292929;border:0;padding:6px} QScrollBar:vertical {width:9px;background:#222} QScrollBar::handle:vertical {background:#505050;min-height:24px} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0} QScrollBar:horizontal {height:9px;background:#222} QScrollBar::handle:horizontal {background:#505050;min-width:24px} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal {width:0}'''
+STYLE='''QWidget {background:#181818;color:#d4d4d4;font-family:"Segoe UI";font-size:12px} QLineEdit,QPlainTextEdit,QListWidget,QTableWidget,QComboBox {background:#202020;border:1px solid #333;selection-background-color:#264f78} QPlainTextEdit {border:0} QPushButton {background:#292929;border:1px solid transparent;border-radius:3px;padding:6px 12px} QPushButton:hover {background:#3a3a3a} QPushButton:disabled {color:#666;background:#222} QPushButton#run {background:#0078d4;color:white} QPushButton#run:disabled {background:#263744;color:#888} QMenu {background:#252526;border:1px solid #444;padding:4px} QMenu::item {padding:7px 24px 7px 12px} QMenu::item:selected {background:#264f78} QMenu::item:disabled {color:#777} QMenu::separator {height:1px;background:#414141;margin:4px 6px} QTabWidget::pane {border:0} QTabBar::tab {padding:7px 12px;background:#252526;color:#aaa} QTabBar::tab:selected {background:#181818;color:white} QSplitter::handle {background:#333} QSplitter::handle:hover {background:#0078d4} QHeaderView::section {background:#292929;border:0;padding:6px} QScrollBar:vertical {width:9px;background:#222} QScrollBar::handle:vertical {background:#505050;min-height:24px} QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical {height:0} QScrollBar:horizontal {height:9px;background:#222} QScrollBar::handle:horizontal {background:#505050;min-width:24px} QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal {width:0} QPushButton:focus,QLineEdit:focus,QListWidget:focus,QTableWidget:focus,QComboBox:focus {border:1px solid #73b8ff} QPlainTextEdit:focus {border:1px solid #73b8ff} QCheckBox:focus,QTabBar::tab:focus {outline:1px solid #73b8ff}'''
 
 # A tiny indeterminate indicator: repaint only this 4-pixel strip, not the log.
 # No claimed percentage; scripts have no universal progress metric.
@@ -134,15 +134,16 @@ class App(QMainWindow):
         row=QHBoxLayout();self.btn(row,'Open file',self.open,True);self.btn(row,'Paste / AI task',self.paste,True);row.addStretch();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run (Ctrl+Enter). Review the script and workspace first; identical task history is checked before execution. Commands use your account permissions.');v.addLayout(row)
         split=QSplitter(Qt.Orientation.Horizontal);self.main_split=split;split.setChildrenCollapsible(False);split.setOpaqueResize(True);split.setHandleWidth(5);v.addWidget(split,1)
         self.tabs=QTabWidget();self.tabs.setMinimumWidth(175);split.addWidget(self.tabs)
-        w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(5,5,5,5);l.addWidget(QLabel('LIVE OUTPUT (visible tail)'));self.steps=QListWidget();l.addWidget(self.steps,3);l.addWidget(QLabel('COMMAND OUTLINE'));self.outline=QListWidget();l.addWidget(self.outline,2);self.tabs.addTab(w,'Steps');self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item))
+        w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(5,5,5,5);l.addWidget(QLabel('LIVE OUTPUT (visible tail)'));self.steps=QListWidget();l.addWidget(self.steps,3);l.addWidget(QLabel('COMMAND OUTLINE'));self.outline=QListWidget();l.addWidget(self.outline,2);self.tabs.addTab(w,'Steps');self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item));self.steps.itemActivated.connect(lambda item:self.jump(self.output,item));self.outline.itemActivated.connect(lambda item:self.jump(self.editor,item))
         w=QWidget();l=QVBoxLayout(w);l.addWidget(QLabel('SCRIPT LIBRARY'));self.liblabel=QLabel(str(self.lib));self.liblabel.setWordWrap(True);l.addWidget(self.liblabel);r=QHBoxLayout();self.btn(r,'Folder…',self.choose_lib,True);self.btn(r,'Refresh',self.refresh_lib);l.addLayout(r);self.libfind=QLineEdit();self.libfind.setPlaceholderText('Filter scripts');l.addWidget(self.libfind);self.library=QListWidget();l.addWidget(self.library,1);self.btn(l,'Load selected',self.load_lib,True);self.btn(l,'Save editor as…',self.save_script,True);self.tabs.addTab(w,'Scripts');self.libfind.textChanged.connect(self.refresh_lib);self.library.itemDoubleClicked.connect(lambda _:self.load_lib())
         right=QSplitter(Qt.Orientation.Vertical);right.setChildrenCollapsible(False);right.setOpaqueResize(True);right.setHandleWidth(5);split.addWidget(right);split.setSizes([250,900]);split.setStretchFactor(1,1)
         w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(4,0,0,0);self.command_label=QLabel('COMMANDS  /  Untitled');r=QHBoxLayout();r.addWidget(self.command_label,1);self.inspector_label=QLabel();self.inspector_label.hide();r.addWidget(self.inspector_label);l.addLayout(r);self.editor=DropEditor();self.editor.setMinimumHeight(100);self.editor.setPlaceholderText('Drop a task file here or use Paste / AI task.');self.editor.setStyleSheet('QPlainTextEdit {font-family: Consolas, monospace; font-size: 13px;}');self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap);l.addWidget(self.editor,1);self.editor.fileDropped.connect(self.load);self.editor.textChanged.connect(self.refresh_outline);self.inspector_timer=QTimer(self);self.inspector_timer.setSingleShot(True);self.inspector_timer.setInterval(220);self.inspector_timer.timeout.connect(self.update_inspector);self.editor.textChanged.connect(lambda:self.inspector_timer.start());self.editor_highlight=Highlight(self.editor.document());right.addWidget(w)
         w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(4,0,0,0);r=QHBoxLayout();self.output_label=QLabel('TERMINAL  /  No report');r.addWidget(self.output_label);r.addStretch();self.dense=QCheckBox('Dense',w);self.dense.setChecked(self.settings.get('dense_output',True));self.wrap=QCheckBox('Wrap',w);self.wrap.setChecked(self.settings.get('wrap_output',True));self.follow=QCheckBox('Follow');self.follow.setChecked(True)
         # Follow remains a visible live control; rarely changed options live in More.
         self.dense.hide();self.wrap.hide();r.addWidget(self.follow);self.btn(r,'Find',self.toggle_search)
-        l.addLayout(r);self.searchbar=QWidget();r=QHBoxLayout(self.searchbar);r.setContentsMargins(0,0,0,0);self.search=QLineEdit();self.search.setPlaceholderText('Find in visible output');r.addWidget(self.search,1);self.btn(r,'↑',lambda:self.find(True));self.btn(r,'↓',lambda:self.find(False));self.btn(r,'×',self.hide_search);l.addWidget(self.searchbar);self.searchbar.hide();self.search.returnPressed.connect(lambda:self.find(False));self.output=QPlainTextEdit();self.output.setReadOnly(True);self.output.setUndoRedoEnabled(False);self.output.setMaximumBlockCount(6000);self.output.setStyleSheet('QPlainTextEdit {font-family: Consolas, monospace; font-size: 13px;}');self.output_highlight=Highlight(self.output.document());l.addWidget(self.output,1);right.addWidget(w);right.setSizes([240,430]);right.setStretchFactor(1,1);self.wrap.toggled.connect(self.apply_wrap);self.dense.toggled.connect(self.reload_tail);self.apply_wrap()
+        l.addLayout(r);self.searchbar=QWidget();r=QHBoxLayout(self.searchbar);r.setContentsMargins(0,0,0,0);self.search=QLineEdit();self.search.setPlaceholderText('Find in visible output');r.addWidget(self.search,1);self.find_previous=self.btn(r,'↑',lambda:self.find(True));self.find_next=self.btn(r,'↓',lambda:self.find(False));self.close_search=self.btn(r,'×',self.hide_search);l.addWidget(self.searchbar);self.searchbar.hide();self.search.returnPressed.connect(lambda:self.find(False));self.output=QPlainTextEdit();self.output.setReadOnly(True);self.output.setUndoRedoEnabled(False);self.output.setMaximumBlockCount(6000);self.output.setStyleSheet('QPlainTextEdit {font-family: Consolas, monospace; font-size: 13px;}');self.output_highlight=Highlight(self.output.document());l.addWidget(self.output,1);right.addWidget(w);right.setSizes([240,430]);right.setStretchFactor(1,1);self.wrap.toggled.connect(self.apply_wrap);self.dense.toggled.connect(self.reload_tail);self.apply_wrap()
         r=QHBoxLayout();self.detail=QLabel('Drop a script or import an AI task.');r.addWidget(self.detail,1);self.copy_button(r,lambda mode:self.copy_report(mode));self.btn(r,'History',self.history);v.addLayout(r)
+        self.configure_accessibility()
         self.build_more_menu()
         self.activity=ActivityBar(self);v.addWidget(self.activity)
         self.statusBar().setSizeGripEnabled(False)
@@ -152,6 +153,23 @@ class App(QMainWindow):
         self.tabs.currentChanged.connect(self.load_library_on_tab)
         self.tabs.setVisible(self.settings.get('show_sidebar',True) is not False)
         QTimer.singleShot(0, self.start_initial_restore)
+    def configure_accessibility(self):
+        # Keep the visible workbench compact; expose meaning to keyboard and assistive tools.
+        for control, name in ((self.cwd, 'Working directory'), (self.editor, 'Command editor'),
+                              (self.output, 'Read-only terminal output'), (self.steps, 'Execution steps'),
+                              (self.outline, 'Command outline'), (self.library, 'Script library'),
+                              (self.libfind, 'Filter scripts'), (self.search, 'Find in visible output'),
+                              (self.tabs, 'Workbench sidebar'), (self.detail, 'Task and export status'),
+                              (self.inspector_label, 'Task Inspector result'), (self.more, 'More tools'),
+                              (self.runbtn, 'Run commands'), (self.stopbtn, 'Stop execution')):
+            control.setAccessibleName(name)
+        for control, name in ((self.find_previous, 'Find previous match (Shift+F3)'),
+                              (self.find_next, 'Find next match (F3)'),
+                              (self.close_search, 'Close output search')):
+            control.setAccessibleName(name);control.setToolTip(name)
+        self.follow.setAccessibleDescription('Automatically scroll terminal output to the latest line.')
+        self.editor.setAccessibleDescription('Review imported commands before running. Ctrl+Enter requests execution.')
+        self.output.setAccessibleDescription('Visible tail of the report. Use Copy or History for the complete report.')
     def build_more_menu(self):
         menu=QMenu(self.more);self.more.setMenu(menu)
         def action(parent,label,fn,edit=False):
@@ -170,6 +188,11 @@ class App(QMainWindow):
         git.addSeparator()
         for name in GIT_ACTIONS:action(git,name,lambda n=name:self.run_git(n),True)
         reports=menu.addMenu('Reports')
+        # Named alternatives to modifier-click, including a conspicuous raw warning.
+        self.copy_ai_action=action(reports,'Copy AI result (masked)',lambda:self.copy_report('ai'))
+        self.copy_text_action=action(reports,'Copy compact text (masked)',lambda:self.copy_report('compact'))
+        self.copy_raw_action=action(reports,'Copy full report (RAW, unmasked)',lambda:self.copy_report('full'))
+        reports.addSeparator()
         action(reports,'Metrics — latest',self.latest_metrics,True)
         action(reports,'Open latest',lambda:self.open_path(REPORTS/'latest.txt'))
         action(reports,'Folder',lambda:self.open_path(REPORTS))
@@ -235,6 +258,7 @@ class App(QMainWindow):
     def copy_button(self,layout,action):
         button=self.btn(layout,'Copy',lambda:action(self.copy_modifier_mode()))
         button.setToolTip(COPY_TIP)
+        button.setAccessibleName('Copy report — AI result by default')
         button.setAccessibleDescription(COPY_TIP)
         return button
     def copy_modifier_mode(self):
