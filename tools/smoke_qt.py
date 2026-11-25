@@ -99,25 +99,44 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
                         'state': 'uploaded', 'size': 64, 'digest': 'sha256:' + 'a' * 64}
                        for i, ext in enumerate(('.zip', '.sha256', '.manifest.json', '.manifest.sig'), 2)]}
     info = updates.parse_latest(data, VERSION)
-    with patch.object(updates, 'check_latest', side_effect=[info, updates.UpdateError('mock failure')]) as check, \
+    unsigned = updates.parse_latest(dict(data, assets=data['assets'][:2]), VERSION)
+    with patch.object(updates, 'check_latest', side_effect=[info, info, unsigned, updates.UpdateError('mock failure')]) as check, \
+            patch.object(updates, 'verify_release_for_display', side_effect=[updates.UpdateError('bad signature'), 'a'*64]) as verify, \
             patch.object(updates, 'download_signed_update') as download:
         dialog = relay_qt.UpdatesDialog(window)
         dialog.show(); app.processEvents()
-        check.assert_not_called()
-        for text in ('NOT verified', 'Not verified'):
-            dialog.check_button.click()
-            assert not dialog.check_button.isEnabled()
+        check.assert_not_called(); verify.assert_not_called()
+        assert not dialog.verify_button.isEnabled()
+        def wait_updates():
             deadline = time.monotonic() + 5
             while dialog.results is not None and time.monotonic() < deadline:
                 app.processEvents(); time.sleep(.01)
             assert dialog.results is None and dialog.check_button.isEnabled()
-            assert text in dialog.trust.text()
-        assert 'Unavailable' in dialog.latest.text()
-        assert 'failed' in dialog.status.text()
-        assert check.call_count == 2
+        dialog.check_button.click()
+        assert not dialog.check_button.isEnabled() and not dialog.verify_button.isEnabled()
+        wait_updates()
+        assert 'NOT verified' in dialog.trust.text() and dialog.verify_button.isEnabled()
+        verify.assert_not_called()
+        dialog.verify_button.click(); wait_updates()
+        assert 'failed' in dialog.status.text() and 'Not verified' in dialog.trust.text()
+        assert not dialog.digest.text() and dialog.verify_button.isEnabled()
+        dialog.verify_button.click(); wait_updates()
+        assert dialog.trust.text() == 'Publisher signature: Verified'
+        assert 'a'*64 in dialog.digest.text() and not dialog.verify_button.isEnabled()
+        assert 'discarded' in dialog.status.text()
+        dialog.check_button.click(); wait_updates()
+        assert 'NOT verified' in dialog.trust.text() and not dialog.digest.text()
+        dialog.check_button.click(); wait_updates()
+        assert not dialog.verify_button.isEnabled() and 'missing' in dialog.trust.text()
+        dialog.verify(); assert verify.call_count == 2
+        dialog.check_button.click(); wait_updates()
+        assert 'Unavailable' in dialog.latest.text() and 'failed' in dialog.status.text()
+        assert not dialog.verify_button.isEnabled()
+        assert check.call_count == 4 and verify.call_count == 2
+        assert all(call.args == (info,) for call in verify.call_args_list)
         download.assert_not_called()
         dialog.reject(); dialog.deleteLater(); app.processEvents()
-    print('Qt updates settings checks passed (explicit metadata check, trust distinction and failure; mocked network).')
+    print('Qt updates settings checks passed (explicit metadata lookup, verification success/failure, stale state reset, unsigned denial; mocked network).')
     # Reproduce audit 041: long labels, compact window, both layout directions.
     original_size = window.size()
     original_direction = window.layoutDirection()

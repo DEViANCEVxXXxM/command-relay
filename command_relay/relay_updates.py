@@ -396,12 +396,7 @@ def describe_release(info):
     return availability, trust
 
 
-def download_signed_update(info):
-    """Fetch the detached signature and manifest, then verify the exact ZIP.
-
-    Legacy unsigned releases remain discoverable, but this operation denies them.
-    No writes, extraction, installation, or execution. All four assets are bounded.
-    """
+def _validate_signed_download(info):
     _validate_download(info)
     stem = f'command-relay-v{info.latest}-windows'
     for asset, name, limit in ((info.manifest, stem + '.manifest.json', MAX_SIGNED_MANIFEST),
@@ -415,6 +410,29 @@ def download_signed_update(info):
         raise UpdateError('Invalid detached signature size.')
     if len({a.asset_id for a in (info.archive, info.checksum, info.manifest, info.signature)}) != 4:
         raise UpdateError('Duplicate release asset identity.')
+
+
+def can_verify_release(info):
+    """Metadata eligibility only; no network access or authentication."""
+    try:
+        _validate_signed_download(info)
+        return True
+    except UpdateError:
+        return False
+
+
+def verify_release_for_display(info):
+    """Authenticate the full download in memory; retain only its digest for display."""
+    signed = download_signed_update(info)
+    return signed.download.sha256
+
+
+def download_signed_update(info):
+    """Fetch the detached signature and manifest, then verify the exact ZIP.
+
+    No writes, extraction, installation, or execution. All four assets are bounded.
+    """
+    _validate_signed_download(info)
     manifest = _download_asset(info, info.manifest)
     signature = _download_asset(info, info.signature)
     download = download_update(info)

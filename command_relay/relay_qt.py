@@ -123,64 +123,93 @@ class WorkerSignals(QObject):
     historyDone=Signal(object,object,object)
 
 class UpdatesDialog(QDialog):
-    """Explicit metadata lookup; no package download, policy mutation or install."""
+    """Explicit metadata lookup and in-memory verification; no installation."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Updates'); self.resize(500, 270)
+        self.setWindowTitle('Updates'); self.resize(560, 300)
         self.results = None
+        self.info = None
         layout = QVBoxLayout(self)
         def label(text):
             item = QLabel(text); item.setWordWrap(True)
             item.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(item)
             return item
         label('Current version: ' + VERSION)
-        label('Check official GitHub release metadata. No package is downloaded or installed.')
+        label('Check official GitHub release metadata or verify a newer package in memory. Nothing is installed.')
         self.latest = label('Latest stable release: Not checked')
         self.status = label('Select Check for updates to start.')
         self.trust = label('Publisher signature: Not verified')
+        self.digest = label('')
         layout.addStretch()
         row = QHBoxLayout(); layout.addLayout(row)
         self.check_button = QPushButton('Check for updates'); self.check_button.setObjectName('updates_check')
         self.check_button.setAutoDefault(False); self.check_button.clicked.connect(self.check); row.addWidget(self.check_button)
+        self.verify_button = QPushButton('Download & Verify'); self.verify_button.setObjectName('updates_verify')
+        self.verify_button.setAutoDefault(False); self.verify_button.setEnabled(False)
+        self.verify_button.clicked.connect(self.verify); row.addWidget(self.verify_button)
         row.addStretch()
         close = QPushButton('Close'); close.setAutoDefault(False); close.clicked.connect(self.reject); row.addWidget(close)
         self.poll = QTimer(self); self.poll.setInterval(50); self.poll.timeout.connect(self.finish_check)
 
+    def _start(self, work, failure):
+        results = queue.Queue(maxsize=1)
+        self.results = results
+        self.check_button.setEnabled(False); self.verify_button.setEnabled(False)
+        # Worker owns only a queue and captured plain Python data, not Qt objects.
+        def run():
+            try: results.put(work())
+            except Exception: results.put(failure)
+        try:
+            threading.Thread(target=run, daemon=True).start()
+        except RuntimeError:
+            results.put(failure)
+        self.poll.start()
+
     def check(self):
         if self.results is not None: return
         from . import relay_updates as updates
-        results = queue.Queue(maxsize=1)
-        self.results = results
-        self.check_button.setEnabled(False)
+        self.info = None
+        self.digest.clear()
         self.latest.setText('Latest stable release: Checking…')
         self.status.setText('Requesting official release metadata…')
         self.trust.setText('Publisher signature: Not verified')
-        # Worker owns only a Python queue, never a Qt object. Closing the dialog
-        # discards the result; the metadata request may finish afterward.
         def work():
-            try:
-                info = updates.check_latest(VERSION)
-                availability, trust = updates.describe_release(info)
-                results.put((info.latest, availability, trust))
-            except Exception:
-                results.put((None, 'Release check failed. Retry later.', 'Publisher signature: Not verified'))
-        try:
-            threading.Thread(target=work, daemon=True).start()
-        except RuntimeError:
-            results.put((None, 'Release check could not start.', 'Publisher signature: Not verified'))
-        self.poll.start()
+            info = updates.check_latest(VERSION)
+            availability, trust = updates.describe_release(info)
+            return ('check', info, availability, trust, '')
+        self._start(work, ('check', None, 'Release check failed. Retry later.', 'Publisher signature: Not verified', ''))
+
+    def verify(self):
+        from . import relay_updates as updates
+        if self.results is not None or not updates.can_verify_release(self.info): return
+        info = self.info
+        self.digest.clear()
+        self.status.setText('Downloading and verifying signed package…')
+        self.trust.setText('Publisher signature: Not verified')
+        def work():
+            digest = updates.verify_release_for_display(info)
+            return ('verify', info, 'Package verified in memory and discarded. No installation performed.',
+                    'Publisher signature: Verified', digest)
+        self._start(work, ('verify', info, 'Package verification failed. Retry or check again.',
+                           'Publisher signature: Not verified', ''))
 
     def finish_check(self):
         if self.results is None: return
-        try: latest, status, trust = self.results.get_nowait()
+        try: mode, info, status, trust, digest = self.results.get_nowait()
         except queue.Empty: return
         self.poll.stop(); self.results = None
-        self.latest.setText('Latest stable release: ' + (latest or 'Unavailable'))
+        from . import relay_updates as updates
+        self.info = info
+        self.latest.setText('Latest stable release: ' + (info.latest if info else 'Unavailable'))
         self.status.setText(status); self.trust.setText(trust)
+        self.digest.setText('Verified archive SHA-256: ' + digest if digest else '')
         self.check_button.setEnabled(True)
+        self.verify_button.setEnabled(not digest and updates.can_verify_release(info))
 
     def done(self, result):
-        self.poll.stop(); self.results = None
+        self.poll.stop(); self.results = None; self.info = None
+        self.digest.clear(); self.trust.setText('Publisher signature: Not verified')
+        self.verify_button.setEnabled(False)
         super().done(result)
 
 
