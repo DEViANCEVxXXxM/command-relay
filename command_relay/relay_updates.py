@@ -1194,6 +1194,71 @@ def _finalize_pending_update_locked(root, installed, target, *, outcome):
         raise UpdateError('Finalization unavailable; inspect transaction and evidence directories.') from None
 
 
+@dataclass(frozen=True)
+class PreparedUpdateHandoff:
+    """External signed inputs and original program copy, not launch authority."""
+    directory: Path
+    updater_root: Path
+    original_folder: Path
+    target_folder: Path
+    plan: InstallPlan
+
+
+def _write_handoff_package(folder, signed):
+    stem = signed.download.info.archive.name[:-4]
+    blobs = {'.zip': signed.download.archive,
+             '.sha256': f'{signed.download.sha256}  {stem}.zip\n'.encode('ascii'),
+             '.manifest.json': signed.manifest, '.manifest.sig': signed.signature}
+    folder.mkdir(mode=0o700)
+    for extension, data in blobs.items():
+        _write_rehearsal_file(folder / (stem + extension), data)
+
+
+def prepare_update_handoff(root, original, target):
+    """Prepare a separate original-version updater and both signed packages.
+
+    No execution, permission mutation, installation or restart. The portable
+    tree is only inspected (the cooperative lock file may be created). The
+    bundle is retained outside the installation, including on partial failure.
+    A later launch must independently authenticate the bundle and its code.
+    """
+    with installation_lock(root):
+        return _prepare_update_handoff_locked(Path(root), original, target)
+
+
+def _prepare_update_handoff_locked(root, original, target):
+    import tempfile
+    _require_no_pending_transaction(root)
+    old, new, _ = _recovery_packages(original, target)
+    plan = plan_installation(root, original, target)
+    _check_transaction_layout(root)
+    if old['requirements.txt'] != new['requirements.txt']:
+        raise UpdateError('Dependency changes require manual installation.')
+    try:
+        directory = Path(tempfile.mkdtemp(prefix='.relay-update-handoff-', dir=root.parent))
+        _checked_path(directory, directory=True)
+        updater = directory / 'updater'
+        updater.mkdir(mode=0o700)
+        for name, data in sorted(old.items()):
+            _write_rehearsal_file(updater / name, data)
+        original_folder, target_folder = directory / 'original', directory / 'target'
+        _write_handoff_package(original_folder, original)
+        _write_handoff_package(target_folder, target)
+        # Reopen all assets through the same bounded, pinned-key reader used
+        # by the standalone updater. Never use unsigned metadata for trust.
+        reopened_old = load_local_signed_package(original_folder, VERSION, current='0.0.0')
+        reopened_new = load_local_signed_package(target_folder, plan.target, current=VERSION)
+        for before, after in ((original, reopened_old), (target, reopened_new)):
+            if (before.download.archive, before.manifest, before.signature) != (
+                    after.download.archive, after.manifest, after.signature):
+                raise UpdateError('Prepared handoff package differs.')
+        plan_installation(updater, reopened_old, reopened_new)
+        _check_transaction_layout(updater)
+        return PreparedUpdateHandoff(directory, updater, original_folder, target_folder, plan)
+    except OSError:
+        raise UpdateError('Unable to prepare external handoff; preserve any partial bundle.') from None
+
+
 def _require_install_permission(root):
     """Read the destination policy, not the standalone copy's policy."""
     from .relay_permissions import KEY, AUDIT_KEY, allowed, audit_history
