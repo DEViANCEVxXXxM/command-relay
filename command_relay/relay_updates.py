@@ -41,6 +41,8 @@ class UpdateInfo:
     release_id: int
     archive: ReleaseAsset
     checksum: ReleaseAsset
+    manifest: ReleaseAsset | None = None
+    signature: ReleaseAsset | None = None
 
     @property
     def available(self):
@@ -89,7 +91,14 @@ def parse_latest(data, current=VERSION):
     checksum = _asset(assets, stem + '.sha256')
     if archive.asset_id == checksum.asset_id:
         raise UpdateError('Duplicate release asset identity.')
-    return UpdateInfo(current, latest, release_id, archive, checksum)
+    manifest_name, signature_name = stem + '.manifest.json', stem + '.manifest.sig'
+    manifest = signature = None
+    if any(a.get('name') in (manifest_name, signature_name) for a in assets):
+        manifest = _asset(assets, manifest_name)
+        signature = _asset(assets, signature_name)
+        if len({a.asset_id for a in (archive, checksum, manifest, signature)}) != 4:
+            raise UpdateError('Duplicate release asset identity.')
+    return UpdateInfo(current, latest, release_id, archive, checksum, manifest, signature)
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -360,3 +369,37 @@ def verify_publisher_package(download, manifest_bytes, signature):
             or archive['sha256'] != download.sha256):
         raise UpdateError('Signed archive identity differs.')
     return inspect_package(download, data['files'])
+
+
+@dataclass(frozen=True)
+class SignedUpdate:
+    """Verified download evidence, not installation authority. Reverify before use."""
+    download: DownloadedUpdate
+    manifest: bytes
+    signature: bytes
+
+
+def download_signed_update(info):
+    """Fetch the detached signature and manifest, then verify the exact ZIP.
+
+    Legacy unsigned releases remain discoverable, but this operation denies them.
+    No writes, extraction, installation, or execution. All four assets are bounded.
+    """
+    _validate_download(info)
+    stem = f'command-relay-v{info.latest}-windows'
+    for asset, name, limit in ((info.manifest, stem + '.manifest.json', MAX_SIGNED_MANIFEST),
+                               (info.signature, stem + '.manifest.sig', 64)):
+        if (not isinstance(asset, ReleaseAsset) or asset.name != name
+                or type(asset.asset_id) is not int or asset.asset_id <= 0
+                or type(asset.size) is not int or not 0 < asset.size <= limit
+                or not isinstance(asset.digest, str) or not _DIGEST.fullmatch(asset.digest)):
+            raise UpdateError('Missing or invalid signed release asset metadata.')
+    if info.signature.size != 64:
+        raise UpdateError('Invalid detached signature size.')
+    if len({a.asset_id for a in (info.archive, info.checksum, info.manifest, info.signature)}) != 4:
+        raise UpdateError('Duplicate release asset identity.')
+    manifest = _download_asset(info, info.manifest)
+    signature = _download_asset(info, info.signature)
+    download = download_update(info)
+    verify_publisher_package(download, manifest, signature)
+    return SignedUpdate(download, manifest, signature)
