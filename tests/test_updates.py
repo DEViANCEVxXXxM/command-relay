@@ -848,3 +848,140 @@ class RecoveryRehearsalTests(unittest.TestCase):
                 u._recover_rehearsal(self.base, self.old, self.new)
         self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ('README.md',))
         self.assertEqual(u._recover_rehearsal(self.base, self.old, self.new), ())
+
+
+# Test-only subprocess protocol. No private key is passed to the child, no
+# installed application is touched, and no package code is executed.
+_RECOVERY_CHILD = r'''
+import json, sys
+from pathlib import Path
+from unittest.mock import patch
+from command_relay import relay_updates as u
+payload = json.loads(sys.stdin.readline())
+base = Path(payload['base'])
+def package(data):
+    info = data['info']
+    for name in ('archive', 'checksum', 'manifest', 'signature'):
+        if info[name] is not None:
+            info[name] = u.ReleaseAsset(**info[name])
+    download = u.DownloadedUpdate(u.UpdateInfo(**info), bytes.fromhex(data['archive']), data['sha256'])
+    return u.SignedUpdate(download, bytes.fromhex(data['manifest']), bytes.fromhex(data['signature']))
+old, new = map(package, payload['packages'])
+mode = payload['mode']
+with patch.object(u, 'PUBLISHER_PUBLIC_KEY', bytes.fromhex(payload['public'])):
+    if mode == 'recover':
+        print(json.dumps(u._recover_rehearsal(base, old, new)), flush=True)
+    else:
+        original, target, _ = u._recovery_packages(old, new)
+        def halt():
+            (base / 'child-ready').write_text('ready', encoding='ascii')
+            # Parent must kill this process; EOF is not a successful test.
+            sys.stdin.readline()
+            raise RuntimeError('Child was not killed')
+        if mode == 'rollback':
+            replace_file = u._replace_rehearsal_file
+            def interrupted(*args):
+                replace_file(*args)
+                halt()
+            with patch.object(u, '_replace_rehearsal_file', side_effect=interrupted):
+                u._recover_rehearsal(base, old, new)
+        else:
+            plan = u._prepare_recovery_rehearsal(base, old, new)
+            (base / 'portable' / 'settings.json').write_bytes(b'preserve me')
+            if mode == 'replace':
+                name = plan.replace[0]
+                u._replace_rehearsal_file(base/'incoming'/name, base/'portable'/name,
+                                          original[name], target[name])
+            elif mode != 'intent':
+                raise RuntimeError('Unexpected test mode')
+            halt()
+'''
+
+
+class CrossProcessRecoveryTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        fixture = InstallPlanTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.old = fixture.old
+        self.new = fixture.package(u.VERSION, '4.10.0', dict(fixture.new_files, **{'README.md': b'new docs'}))
+        self.temp = tempfile.TemporaryDirectory(prefix='relay-crash-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.base = Path(self.temp.name).resolve()
+        self.public = fixture.key.public_key().public_bytes_raw().hex()
+        self.original, self.target, _ = u._recovery_packages(self.old, self.new)
+
+    def payload(self, mode):
+        from dataclasses import asdict
+        def encode(item):
+            return {'info': asdict(item.download.info), 'archive': item.download.archive.hex(),
+                    'sha256': item.download.sha256, 'manifest': item.manifest.hex(),
+                    'signature': item.signature.hex()}
+        return json.dumps({'base': str(self.base), 'mode': mode, 'public': self.public,
+                           'packages': [encode(self.old), encode(self.new)]}) + '\n'
+
+    def kill_at_checkpoint(self, mode):
+        import subprocess
+        import sys
+        import time
+        marker = self.base / 'child-ready'
+        self.assertFalse(marker.exists())
+        with subprocess.Popen([sys.executable, '-B', '-c', _RECOVERY_CHILD],
+                              stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, text=True, encoding='utf-8') as child:
+            try:
+                child.stdin.write(self.payload(mode))
+                child.stdin.flush()
+                deadline = time.monotonic() + 30
+                while not marker.exists():
+                    if child.poll() is not None or time.monotonic() >= deadline:
+                        self.fail('Child failed to reach recovery checkpoint')
+                    time.sleep(0.02)
+                self.assertIsNone(child.poll())
+                child.kill()
+                child.wait(timeout=15)
+                self.assertNotEqual(child.returncode, 0)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=15)
+            marker.unlink()
+
+    def recover(self):
+        import subprocess
+        import sys
+        result = subprocess.run([sys.executable, '-B', '-c', _RECOVERY_CHILD],
+                                input=self.payload('recover'), text=True, encoding='utf-8',
+                                capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return tuple(json.loads(result.stdout))
+
+    def verify_restored(self):
+        u._verify_rehearsal_tree(self.base/'portable', self.original)
+        self.assertEqual((self.base/'portable'/'settings.json').read_bytes(), b'preserve me')
+        self.assertEqual(self.recover(), ())
+
+    def test_kill_after_intent_before_replacement(self):
+        self.kill_at_checkpoint('intent')
+        self.assertEqual(self.recover(), ())
+        self.verify_restored()
+
+    def test_kill_after_replacement(self):
+        self.kill_at_checkpoint('replace')
+        self.assertEqual((self.base/'portable'/'README.md').read_bytes(), b'new docs')
+        self.assertEqual(self.recover(), ('README.md',))
+        self.verify_restored()
+
+    def test_kill_during_rollback_then_retry(self):
+        plan = u._prepare_recovery_rehearsal(self.base, self.old, self.new)
+        (self.base/'portable'/'settings.json').write_bytes(b'preserve me')
+        for name in plan.replace:
+            u._replace_rehearsal_file(self.base/'incoming'/name, self.base/'portable'/name,
+                                      self.original[name], self.target[name])
+        self.kill_at_checkpoint('rollback')
+        self.assertEqual((self.base/'portable'/'Start.pyw').read_bytes(), self.original['Start.pyw'])
+        self.assertEqual((self.base/'portable'/'README.md').read_bytes(), self.target['README.md'])
+        self.assertEqual(self.recover(), ('README.md',))
+        self.verify_restored()
