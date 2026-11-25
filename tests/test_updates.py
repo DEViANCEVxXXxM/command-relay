@@ -1949,3 +1949,152 @@ class GuiHandoffPreparationTests(unittest.TestCase):
             self.assertIsNone(u._gui_installation.get())
             with self.assertRaises(u.UpdateError):
                 u.prepare_gui_update_handoff(root, package.original_folder, target)
+
+
+class UpdateLifecycleIntegrationTests(unittest.TestCase):
+    """Real independent write processes; only terminal and crash are simulated."""
+
+    def setUp(self):
+        from pathlib import Path
+        from command_relay.relay_permissions import with_permission
+        self.f = InstallPlanTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.root = self.f.root
+        source = Path(u.__file__).resolve().parent.parent
+        self.old = {name: (source / name).read_bytes() for name in u.INSTALL_PROGRAM_FILES}
+        # Embed only the ephemeral public pin in the disposable original copy.
+        name = 'command_relay/relay_updates.py'
+        self.old[name] = self.old[name].replace(
+            b'835cafd70177a9c97c426d1f05b522650d05a16c302380654372da4d0c07389b',
+            self.f.key.public_key().public_bytes_raw().hex().encode('ascii'))
+        self.new = dict(self.old)
+        self.new['README.md'] += b'\nIntegration test target\n'
+        self.new['command_relay/relay_version.py'] = b'VERSION = "4.10.0"\n'
+        self.new['Start.pyw'] = (
+            b'from pathlib import Path\n'
+            b'from command_relay.relay_updates import startup_installation_guard\n'
+            b'from command_relay.relay_version import VERSION\n'
+            b'root = Path(__file__).resolve().parent\n'
+            b'with startup_installation_guard(root):\n'
+            b'    (root / "reports" / "restarted.txt").write_text(VERSION, encoding="utf-8")\n')
+        for name, data in self.old.items():
+            (self.root / name).write_bytes(data)
+        self.f.old = self.f.package('4.1.0', u.VERSION, self.old)
+        self.f.new = self.f.package(u.VERSION, '4.10.0', self.new)
+        self.data = {'settings.json': b'preserve settings', 'startup.log': b'old log',
+                     'reports/report.txt': b'original report', 'scripts/task.ps1': b'original task',
+                     'automation-permissions.json': json.dumps(with_permission({}, 'update_install', enabled=True)).encode()}
+        for name, data in self.data.items():
+            path = self.root / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_bytes(data)
+        self.bundle = u.prepare_update_handoff(self.root, self.f.old, self.f.new)
+        self.marker = self.root / u.UPDATE_TRANSACTION_NAME
+
+    def assert_tree(self, files):
+        for name, data in {**files, **self.data}.items():
+            self.assertEqual((self.root / name).read_bytes(), data, name)
+
+    def run_child(self, action, tokens, *, crash=False, gui=False):
+        import subprocess
+        import sys
+        import os
+        spawn = subprocess.Popen
+        children = []
+        def capture(argv, **kwargs):
+            # The real production helper authenticates the bundle and constructs
+            # the fixed invocation. The test harness adapts terminal detection
+            # only, and optionally injects abrupt process exit after a real replace.
+            argv = list(argv)
+            prefix = 'import sys; sys.stdin.isatty=lambda:True; sys.stderr.isatty=lambda:True; '
+            if crash:
+                prefix += ('import os; sys.path.insert(0,sys.argv.pop(1)); '
+                           'from command_relay import relay_updates as u; '
+                           'replace=u._replace_rehearsal_file; '
+                           'u._replace_rehearsal_file=lambda *a:(replace(*a),os._exit(91)); '
+                           'raise SystemExit(u.updater_main())')
+                argv[4] = prefix
+            else:
+                argv[4] = prefix + argv[4]
+            kwargs.update(stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          creationflags=0)
+            child = spawn(argv, **kwargs)
+            children.append(child)
+            return child
+        try:
+            with patch('subprocess.Popen', side_effect=capture), \
+                    patch.object(sys.stdin, 'isatty', return_value=True), \
+                    patch.object(sys.stderr, 'isatty', return_value=True):
+                if gui:
+                    from command_relay import __main__ as entry
+                    with patch.object(entry, 'ROOT', self.root):
+                        def exit_gui():
+                            with self.assertRaises(u.UpdateError), u.installation_lock(self.root):
+                                pass
+                            return self.bundle
+                        self.assertEqual(entry.main(exit_gui), 0)
+                else:
+                    u.launch_prepared_updater(self.bundle, action=action)
+            self.assertEqual(len(children), 1)
+            child = children[0]
+            output, errors = child.communicate(tokens.encode('ascii'), timeout=60)
+            return child.returncode, output.decode('utf-8'), errors.decode('utf-8', errors='replace')
+        finally:
+            for child in children:
+                if child.poll() is None:
+                    child.kill()
+                    child.communicate()
+
+    def test_gui_exit_to_independent_install_and_guarded_restart(self):
+        from pathlib import Path
+        status, output, errors = self.run_child('install', 'INSTALL 4.10.0\nRESTART 4.10.0\n', gui=True)
+        self.assertEqual(status, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result['outcome'], result['version'], result['restart_status']),
+                         ('commit', '4.10.0', 'launched'))
+        self.assert_tree(self.new)
+        self.assertFalse(self.marker.exists())
+        self.assertTrue((Path(result['evidence']) / 'intent.json').is_file())
+        # The restart child may not inherit the capture pipes on Windows.
+        # Wait for the guarded marker, then verify the child released the lock.
+        import time
+        marker = self.root / 'reports/restarted.txt'
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if marker.is_file():
+                try:
+                    with u.installation_lock(self.root):
+                        self.assertEqual(marker.read_text(encoding='utf-8'), '4.10.0')
+                    break
+                except u.UpdateError:
+                    pass
+            time.sleep(0.05)
+        else:
+            self.fail('Signed restart child did not complete guarded startup')
+        self.assertTrue(self.bundle.original_folder.is_dir())
+        self.assertTrue(self.bundle.target_folder.is_dir())
+        self.assertFalse(list(self.root.rglob('__pycache__')))
+
+    def test_abrupt_independent_install_exit_and_independent_recovery(self):
+        from pathlib import Path
+        status, _, errors = self.run_child('install', 'INSTALL 4.10.0\n', crash=True)
+        self.assertEqual(status, 91, errors)
+        self.assertTrue(self.marker.is_dir())
+        self.assertEqual((self.root / 'README.md').read_bytes(), self.new['README.md'])
+        self.assertEqual((self.root / 'Start.pyw').read_bytes(), self.old['Start.pyw'])
+        with self.assertRaises(u.RecoveryRequired), u.startup_installation_guard(self.root):
+            self.fail('mixed tree allowed startup')
+        # Recovery must remain possible even after permission is revoked.
+        self.data['automation-permissions.json'] = b'{}'
+        (self.root / 'automation-permissions.json').write_bytes(b'{}')
+        status, output, errors = self.run_child('recover', 'RECOVER 4.10.0\n')
+        self.assertEqual(status, 0, errors)
+        result = json.loads(output)
+        self.assertEqual((result['outcome'], result['version'], result['restart_status']),
+                         ('rollback', u.VERSION, 'not_requested'))
+        self.assert_tree(self.old)
+        self.assertFalse(self.marker.exists())
+        self.assertTrue((Path(result['evidence']) / 'intent.json').is_file())
+        with u.startup_installation_guard(self.root):
+            pass

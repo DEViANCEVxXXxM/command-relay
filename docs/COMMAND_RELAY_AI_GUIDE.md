@@ -483,9 +483,17 @@ undo a committed update. Recovery does not offer restart. Production signing
 and real signed-release integration are not established. The GUI handoff is a development implementation awaiting
 end-to-end Windows acceptance, not proof that production self-update works.
 Existing tests use disposable trees, ephemeral keys and mocked network/GUI
-preparation or subprocess launch where applicable. The first signed-version
-bootstrap, pre-existing runtime caches, recovery UX and original-package
-acquisition remain explicit release gates. Release publication and production
+preparation or subprocess launch where applicable. The lifecycle integration
+suite also exercises real independent write processes: GUI callback return,
+external handoff, install, commit and guarded inert signed restart; a separate
+scenario exits abruptly after the first replacement, rejects startup on the
+mixed tree, and restores the signed original in a fresh recovery process.
+The test harness simulates terminal detection and injects the crash only in
+its disposable copy. Both scenarios verify preservation of user data and
+transaction evidence. They do not prove actual Qt GUI readiness or production
+signed-release acceptance. The first signed-version bootstrap, pre-existing
+runtime caches, recovery UX and original-package acquisition remain explicit
+release gates. Release publication and production
 signing require separate maintainer review.
 
 ## 11. Efficient AI-assisted development and validation
