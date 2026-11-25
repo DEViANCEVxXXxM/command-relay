@@ -45,7 +45,7 @@ class StructureTests(unittest.TestCase):
 from command_relay import relay_core, relay_compare, relay_export, relay_features, relay_intelligence, relay_privacy, relay_session, relay_view, relay_windows
 from command_relay.relay_terms import disclaimer_text
 from command_relay.relay_version import VERSION
-assert relay_core.ROOT == Path.cwd()
+assert relay_core.ROOT.samefile(Path.cwd()), (relay_core.ROOT, Path.cwd())
 assert relay_core.ASSETS.joinpath('relay-icon.png').is_file()
 assert disclaimer_text(relay_core.ROOT)
 assert relay_core.load_input(Path('examples/example-ai-task.json').read_bytes())[1]['task_id'] == 'relay-qt-smoke-40'
