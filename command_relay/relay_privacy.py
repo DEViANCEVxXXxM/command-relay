@@ -124,12 +124,24 @@ RULES = (
     ('review','File or repository changes',r'\b(?:Remove-Item|Set-Content|Add-Content|Out-File|New-Item|Copy-Item|Move-Item|Rename-Item|Set-ItemProperty|Remove-ItemProperty)\b|\bgit\s+(?:add|commit|checkout|switch|merge|rebase|restore|apply|cherry-pick)\b'),
     ('review','Dependency installation',r'\b(?:pip(?:3)?|npm|pnpm|yarn|winget|choco|cargo)\s+(?:install|add|update|upgrade)\b'),
 )
+# Recognize common literal argument lists and helper calls in embedded Python.
+# This is a lexical heuristic, not parsing, data-flow analysis or execution.
+_GIT_ARGS = r"(?:[\"']git(?:\.exe)?[\"']\s*,\s*[\"']|\bgit\s*\(\s*[\"'])"
+_GIT_END = r"[\"']"
+RULES += (
+    ('high','Destructive file or disk operation',_GIT_ARGS+r"(?:reset"+_GIT_END+r"[^\r\n]*[\"']--hard[\"']|push"+_GIT_END+r"[^\r\n]*[\"'](?:--force(?:-with-lease(?:=[^\"']*)?)?|-f)[\"']|clean"+_GIT_END+r"[^\r\n]*[\"'](?:--force|-[a-z]*f[a-z]*)[\"'])"),
+    ('review','Network or remote Git operation',_GIT_ARGS+r"(?:fetch|pull|push|clone|ls-remote)"+_GIT_END),
+    ('review','File or repository changes',_GIT_ARGS+r"(?:add|commit|checkout|switch|merge|rebase|restore|apply|cherry-pick|tag|branch|reset|clean|stash|revert|remote|config)"+_GIT_END+r"|\bgit(?:\.exe)?\s+(?:tag|branch|reset|clean|stash|revert|remote|config)\b"),
+    ('review','GitHub CLI operation',r"\bgh(?:\.exe)?\s+(?:api|pr|issue|release|repo|workflow|run|auth|label|secret|variable|project)\b|[\"']gh(?:\.exe)?[\"']\s*,\s*[\"'](?:api|pr|issue|release|repo|workflow|run|auth|label|secret|variable|project)[\"']|\bgh\s*\(\s*[\"'](?:api|pr|issue|release|repo|workflow|run|auth|label|secret|variable|project)[\"']"),
+    ('review','External process execution',r"\bsubprocess\s*\.\s*(?:run|Popen|call|check_call|check_output|getoutput|getstatusoutput)\s*\(|\bos\s*\.\s*(?:system|popen|spawn[lv]p?e?|exec[lv]p?e?|startfile)\s*\(|\bStart-Process\b"),
+)
+# Multiple patterns may contribute to the same hint. Aggregate by label below.
 RULES=tuple((level,label,re.compile(pattern,re.I)) for level,label,pattern in RULES)
 MAX_SCRIPT=1_000_000
 
 
 def inspect_script(script):
-    matches=[];limited=len(script)>MAX_SCRIPT
+    grouped={};limited=len(script)>MAX_SCRIPT
     text=script[:MAX_SCRIPT].splitlines()
     for level,label,pattern in RULES:
         lines=[]
@@ -138,6 +150,9 @@ def inspect_script(script):
             if pattern.search(line):
                 lines.append(i)
                 if len(lines)>=5:break
-        if lines:matches.append({'level':level,'label':label,'lines':lines})
+        if lines:
+            key=(level,label)
+            grouped[key]=sorted(set(grouped.get(key,[])+lines))[:5]
+    matches=[{'level':level,'label':label,'lines':lines} for (level,label),lines in grouped.items()]
     level='high' if any(m['level']=='high' for m in matches) else 'review' if matches or limited else 'none'
     return {'level':level,'matches':matches,'scan_limited':limited,'note':'Heuristic text scan only; not a sandbox or safety guarantee. Aliases, indirect commands and effects can be missed.'}
