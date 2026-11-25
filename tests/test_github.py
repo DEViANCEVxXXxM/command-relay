@@ -200,7 +200,7 @@ class GitHubTests(unittest.TestCase):
 
     def test_automatic_merge_denied_without_scoped_permission(self):
         client = self.client(); client.inspect = Mock(); client._api = Mock()
-        with tempfile.TemporaryDirectory() as d, patch('command_relay.relay_core.SETTINGS', pathlib.Path(d)/'missing.json'):
+        with tempfile.TemporaryDirectory() as d, patch('command_relay.relay_permissions.policy_path', return_value= pathlib.Path(d)/'missing.json'):
             with self.assertRaisesRegex(GitHubError, 'disabled'):
                 client.wait_and_merge(42, head='feat/test', head_sha=B, base='main', base_sha=A,
                                       required_checks=['CI'], confirmed=True, workspace=d)
@@ -216,7 +216,7 @@ class GitHubTests(unittest.TestCase):
             settings = pathlib.Path(d)/'settings.json'
             grant = with_permission({}, 'squash_merge', enabled=True, workspace=d, repository=REPO)
             settings.write_text(json.dumps(grant), encoding='utf-8')
-            with patch('command_relay.relay_core.SETTINGS', settings), patch('command_relay.relay_github.workspace_repo', return_value=REPO):
+            with patch('command_relay.relay_permissions.policy_path', return_value= settings), patch('command_relay.relay_github.workspace_repo', return_value=REPO):
                 def inspect(number):
                     if client.inspect.call_count == 2:
                         settings.write_text('{}', encoding='utf-8')
@@ -241,7 +241,7 @@ class GitHubTests(unittest.TestCase):
             settings = pathlib.Path(d)/'settings.json'
             settings.write_text(json.dumps(with_permission({}, 'squash_merge', enabled=True,
                                 workspace=d, repository=REPO)), encoding='utf-8')
-            with patch('command_relay.relay_core.SETTINGS', settings), patch('command_relay.relay_github.workspace_repo', return_value='other/repo'):
+            with patch('command_relay.relay_permissions.policy_path', return_value= settings), patch('command_relay.relay_github.workspace_repo', return_value='other/repo'):
                 with self.assertRaisesRegex(GitHubError, 'origin'):
                     client.wait_and_merge(42, head='feat/test', head_sha=B, base='main', base_sha=A,
                                           required_checks=['CI'], confirmed=True, workspace=d)

@@ -122,6 +122,102 @@ class WorkerSignals(QObject):
     warmDone=Signal(object,object)
     historyDone=Signal(object,object,object)
 
+class SafetyDialog(QDialog):
+    """Only implemented automation is exposed; no network or task execution."""
+    completed = Signal(object, object, str)
+
+    def __init__(self, workspace, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Safety settings'); self.resize(650, 390)
+        self.workspace = workspace; self.scope = None; self.snapshot = None; self.busy = False
+        self.completed.connect(self.finish_policy, Qt.ConnectionType.QueuedConnection)
+        layout = QVBoxLayout(self)
+        def label(text):
+            widget = QLabel(text); widget.setWordWrap(True); widget.setTextFormat(Qt.TextFormat.PlainText)
+            layout.addWidget(widget); return widget
+        label('Automation permissions — disabled by default')
+        label('Only built-in automatic squash merge is available. Manual Run and manual merge remain separate. Arbitrary scripts are not sandboxed.')
+        self.target = label('Workspace: ' + workspace)
+        self.notice = label('Refresh to read local policy and origin.')
+        self.toggle = QCheckBox('Allow automatic squash merge for this workspace and repository')
+        self.toggle.setAccessibleName('Allow scoped automatic squash merge'); layout.addWidget(self.toggle)
+        label('Every automatic merge still requires explicit task review. Other automation permissions are not implemented.')
+        layout.addStretch()
+        row = QHBoxLayout(); layout.addLayout(row)
+        def button(text, fn):
+            b = QPushButton(text); b.setAutoDefault(False); b.clicked.connect(fn); row.addWidget(b); return b
+        self.refresh_button = button('Refresh', self.refresh)
+        self.revoke_button = button('Revoke all grants…', self.revoke_all)
+        self.save_button = button('Apply change…', self.save)
+        self.close_button = button('Close', self.reject)
+        self.update_controls()
+
+    def update_controls(self):
+        self.toggle.setEnabled(not self.busy and self.scope is not None and self.snapshot is not None)
+        self.save_button.setEnabled(self.toggle.isEnabled())
+        self.revoke_button.setEnabled(not self.busy and self.snapshot is not None)
+        self.refresh_button.setEnabled(not self.busy); self.close_button.setEnabled(not self.busy)
+
+    def start(self, fn):
+        if self.busy: return
+        self.busy = True; self.update_controls(); self.notice.setText('Reading or saving local policy…')
+        def work():
+            try: scope, snapshot, note = fn()
+            except Exception:
+                scope, snapshot, note = None, None, 'Policy operation not verified. Refresh; if invalid or locked, inspect the local policy file before making changes.'
+            self.completed.emit(scope, snapshot, note)
+        try: threading.Thread(target=work, daemon=True).start()
+        except RuntimeError: self.finish_policy(None, None, 'Could not start local worker.')
+
+    def finish_policy(self, scope, snapshot, note):
+        from . import relay_permissions as policy
+        self.busy = False; self.scope = scope; self.snapshot = snapshot
+        self.target.setText('Workspace: ' + (scope[0] if scope else self.workspace) + '\nRepository: ' + (scope[1] if scope else 'Not resolved'))
+        self.toggle.setChecked(bool(scope and snapshot is not None and policy.allowed(snapshot, 'squash_merge', workspace=scope[0], repository=scope[1])))
+        self.notice.setText(note); self.update_controls()
+
+    def refresh(self):
+        from . import relay_permissions as policy
+        def work():
+            snapshot = policy.policy_snapshot()
+            try: scope = policy.merge_scope(self.workspace)
+            except Exception: return None, snapshot, 'No supported GitHub origin. You can still revoke all saved grants.'
+            return scope, snapshot, 'Local policy loaded. No changes made.'
+        self.start(work)
+
+    def confirm(self, text):
+        box = QMessageBox(QMessageBox.Icon.Warning, 'Confirm permission change', text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, self)
+        box.setTextFormat(Qt.TextFormat.PlainText); box.setDefaultButton(QMessageBox.StandardButton.Cancel); box.setEscapeButton(QMessageBox.StandardButton.Cancel)
+        return box.exec() == QMessageBox.StandardButton.Yes
+
+    def save(self):
+        from . import relay_permissions as policy
+        if self.busy or self.scope is None or self.snapshot is None: return
+        scope, snapshot, enabled = self.scope, self.snapshot, self.toggle.isChecked()
+        if enabled == policy.allowed(snapshot, 'squash_merge', workspace=scope[0], repository=scope[1]):
+            self.notice.setText('No permission change selected.'); return
+        if not self.confirm(('Allow' if enabled else 'Revoke') + ' automatic squash merge?\n\n' + scope[0] + '\n' + scope[1] + '\n\nNo merge will be executed now.'):
+            self.finish_policy(scope, snapshot, 'Cancelled. No changes made.'); return
+        def work():
+            updated = policy.save_merge_permission(snapshot, workspace=scope[0], repository=scope[1], enabled=enabled)
+            return scope, updated, 'Permission saved. No commands or network writes executed.'
+        self.start(work)
+
+    def revoke_all(self):
+        from . import relay_permissions as policy
+        if self.busy or self.snapshot is None: return
+        if not self.confirm('Revoke all saved automation grants for all workspaces?'): return
+        scope, snapshot = self.scope, self.snapshot
+        self.start(lambda: (scope, policy.revoke_all_permissions(snapshot), 'All grants revoked.'))
+
+    def reject(self):
+        if not self.busy: super().reject()
+
+    def closeEvent(self, event):
+        if self.busy: event.ignore()
+        else: super().closeEvent(event)
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle(f'Command Relay {VERSION} — Qt Workbench');self.resize(1180,740);self.setMinimumSize(850,560)
@@ -198,6 +294,7 @@ class App(QMainWindow):
         action(reports,'Folder',lambda:self.open_path(REPORTS))
         action(menu,'Task queue…',self.queue_dialog,True)
         action(menu,'SHA-256 file…',self.hash_tool,True)
+        self.safety_action=action(menu,'Safety settings…',self.safety_settings,True)
         menu.addSeparator()
         view=menu.addMenu('View')
         self.sidebar_action=view.addAction('Show sidebar');self.sidebar_action.setCheckable(True)
@@ -620,6 +717,13 @@ class App(QMainWindow):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
         self.start_tool('Project context',lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
+    def safety_settings(self):
+        if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
+            return self.error('Finish the active operation first')
+        dialog = SafetyDialog(self.cwd.text(), self)
+        dialog.refresh()
+        dialog.exec()
+
     def github_prs(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
             return self.error('Finish the active operation first')
