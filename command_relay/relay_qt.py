@@ -487,6 +487,11 @@ class App(QMainWindow):
                 self.signals.copyDone.emit(('session context',str(len(packet['runs']))+' runs',None,packet['privacy']['replacements']),out,None)
             except Exception as e:self.signals.copyDone.emit(('session context','',None,0),None,'Could not prepare protected session export')
         threading.Thread(target=work,daemon=True).start()
+    def review_session_context(self):
+        if self.running or self.copy_busy:return self.error('Finish the current run or copy first')
+        cwd=self.cwd.text()
+        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
+        self.start_tool('Workspace session context',lambda:session.session_packet(REPORTS,cwd))
     def warm_export(self,path):
         # One bounded speculative worker. Never write to clipboard on completion.
         if self.warm_path is not None or self.copy_busy:return
@@ -662,7 +667,7 @@ class App(QMainWindow):
     def history(self):
         dlg=QDialog(self);dlg.setWindowTitle('Run history');dlg.resize(940,580);l=QVBoxLayout(dlg);r=QHBoxLayout();q=QLineEdit();q.setPlaceholderText('Search history');r.addWidget(q,1);flt=QComboBox();flt.addItems(['All','Exit 0','Failed','Cancelled','Partial / unknown']);r.addWidget(flt);l.addLayout(r);table=QTableWidget(0,4);table.setHorizontalHeaderLabels(['Started','Command','Process status','Elapsed']);table.verticalHeader().hide();table.setColumnWidth(0,180);table.setColumnWidth(2,110);table.setColumnWidth(3,85);table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch);table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection);table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers);l.addWidget(table,1)
         paths=[];snapshot=[];token=object();loading=False;closed=False
-        status_label=QLabel('Loading history…');l.addWidget(status_label)
+        status_label=QLabel('Loading history…');status_row=QHBoxLayout();status_row.addWidget(status_label,1);self.btn(status_row,'Review workspace session…',self.review_session_context);l.addLayout(status_row)
         def fill():
             table.setUpdatesEnabled(False)
             try:

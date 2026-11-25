@@ -91,6 +91,20 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             finally:
                 window.cleanup_temp()
     print('Qt repeated-task confirmation checks passed (cancel and explicit rerun; no commands executed).')
+    # Session review uses the selected workspace, never executes a task or auto-copies.
+    with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
+            patch.object(window, 'start_tool') as tool:
+        window.cwd.setText(str(root))
+        window.review_session_context()
+        tool.assert_called_once()
+        title, work = tool.call_args.args
+        assert title == 'Workspace session context'
+        packet = work()
+        assert packet['schema'] == 'command-relay/session-v1'
+        assert packet['handoff']['latest_report'] is None
+        assert packet['current_project']['network'] is False
+    print('Qt session review entry point checks passed (local-only preview).')
+
     # Mock all CLI traffic. Exercise the actual dialog, worker completion and confirmation.
     from command_relay import relay_github_qt
     from command_relay.relay_github import PullRequest, Check, MergeUnknown
