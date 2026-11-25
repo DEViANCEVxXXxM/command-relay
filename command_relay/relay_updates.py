@@ -994,6 +994,122 @@ def inspect_local_installation(root, original_folder, target_folder, target_vers
         return plan_installation(root, original, target)
 
 
+def _check_transaction_layout(root):
+    """Conservative prototype: reject unapproved entries in program directories.
+
+    User-data directories are opaque and never traversed. Cache migration and
+    other portable layouts are not enabled by this prototype.
+    """
+    allowed = {}
+    for name in INSTALL_PROGRAM_FILES:
+        parts = name.split('/')
+        for i, part in enumerate(parts):
+            allowed.setdefault('/'.join(parts[:i]), set()).add(part)
+    user_files = {'settings.json', 'automation-permissions.json', 'startup.log',
+                  'startup-timing.json', '.automation-permissions.lock', UPDATE_LOCK_NAME}
+    user_dirs = {'reports', 'scripts', UPDATE_TRANSACTION_NAME}
+    for relative, names in allowed.items():
+        folder = root / relative
+        _checked_path(folder, directory=True)
+        for entry in folder.iterdir():
+            if entry.name in names:
+                continue
+            if not relative and entry.name in user_files | user_dirs:
+                _checked_path(entry, directory=entry.name in user_dirs)
+                continue
+            raise UpdateError('Unexpected entry in managed installation layout.')
+
+
+def _pending_intent(installed, target, old, new):
+    return _recovery_intent(installed, target, old, new).replace(
+        b'command-relay/rehearsal-recovery-v1', b'command-relay/pending-update-v1')
+
+
+def _apply_pending_update(root, installed, target):
+    """Internal transaction prototype; not exposed by the standalone CLI.
+
+    Under the shared lock, verify both packages and the existing tree. Keep
+    the marker even after success: a separate finalization step must verify
+    the target and release the startup gate. Any failure preserves evidence.
+    No permission grant, dependency installation, restart or power-loss claim.
+    """
+    root = Path(root)
+    with installation_lock(root):
+        _require_no_pending_transaction(root)
+        old, new, _ = _recovery_packages(installed, target)
+        plan = plan_installation(root, installed, target)
+        _check_transaction_layout(root)
+        marker = root / UPDATE_TRANSACTION_NAME
+        try:
+            marker.mkdir(mode=0o700)
+            for name in plan.replace:
+                _write_rehearsal_file(marker / 'backup' / name, old[name])
+                _write_rehearsal_file(marker / 'incoming' / name, new[name])
+            intent = _pending_intent(installed, target, old, new)
+            _write_rehearsal_file(marker / 'intent.json', intent)
+            # Recheck the complete original tree and journal before first write.
+            plan_installation(root, installed, target)
+            _check_transaction_layout(root)
+            for name in plan.replace:
+                for prefix, data in (('backup/', old[name]), ('incoming/', new[name])):
+                    if _read_recovery_file(marker, prefix + name, MAX_MEMBER_BYTES) != data:
+                        raise UpdateError('Pending transaction staging differs.')
+            for name in plan.replace:
+                _replace_rehearsal_file(marker / 'incoming' / name, root / name,
+                                        old[name], new[name])
+            for name, data in new.items():
+                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
+                    raise UpdateError('Pending target tree differs.')
+            return plan
+        except OSError:
+            raise UpdateError('Pending update interrupted; preserve transaction files.') from None
+
+
+def _recover_pending_update(root, installed, target):
+    """Restore authenticated original files under lock; retain the marker.
+
+    Requires both signed packages and intact backups. Unknown contents or an
+    incomplete intent are denied before any restoration. Backups are never
+    consumed, so an interrupted restore can be retried. No CLI or finalizer.
+    """
+    import os
+    import tempfile
+    root = Path(root)
+    with installation_lock(root):
+        old, new, _ = _recovery_packages(installed, target)
+        marker = root / UPDATE_TRANSACTION_NAME
+        intent = _pending_intent(installed, target, old, new)
+        try:
+            _check_transaction_layout(root)
+            if _read_recovery_file(root, UPDATE_TRANSACTION_NAME + '/intent.json', len(intent)) != intent:
+                raise UpdateError('Pending transaction intent differs.')
+            pending = []
+            for name in sorted(old):
+                actual = _read_recovery_file(root, name, MAX_MEMBER_BYTES)
+                if actual not in (old[name], new[name]):
+                    raise UpdateError('Unknown pending program file state.')
+                if old[name] != new[name]:
+                    if _read_recovery_file(marker, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
+                        raise UpdateError('Pending transaction backup differs.')
+                    if actual != old[name]:
+                        pending.append(name)
+            for name in reversed(pending):
+                # Unique same-volume restore file; the authenticated backup
+                # remains intact even if this process dies after replacement.
+                with tempfile.NamedTemporaryFile(dir=marker, prefix='restore-', delete=False) as stream:
+                    scratch = Path(stream.name)
+                    stream.write(old[name])
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                _replace_rehearsal_file(scratch, root / name, new[name], old[name])
+            for name, data in old.items():
+                if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
+                    raise UpdateError('Restored original tree differs.')
+            return tuple(pending)
+        except OSError:
+            raise UpdateError('Pending recovery interrupted or unavailable; preserve evidence.') from None
+
+
 def updater_main(argv=None):
     """Read-only standalone updater entry point (no Qt or package execution)."""
     import argparse
