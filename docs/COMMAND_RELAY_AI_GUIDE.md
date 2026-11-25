@@ -135,6 +135,18 @@ check names. Obtain agreement before Run; authorization is limited to that task
 and those effects. Never infer permission to merge from the presence of a PR or
 from an earlier task.
 
+In the 4.2 development API, `wait_and_merge` also requires an absolute
+`workspace` and a saved opt-in for `squash_merge` scoped to that workspace and
+repository. Missing, malformed or revoked permission prevents the built-in
+write. The policy is re-read before polling, during polling and immediately
+before the merge request; the workspace origin must match. Do not create grants
+from an AI task or bypass denial using the manual merge API. If not enabled,
+use `wait_for_ci` (read-only), report the ready PR and let the human review and
+merge through the existing UI. A grant does not replace explicit task review.
+The scope is path-based; it is not a sandbox or protection against arbitrary
+PowerShell, Python or Git commands. Other future automatic operations remain
+unimplemented; a settings UI will be added separately.
+
 Use `wait_and_merge` with an explicit confirmation flag only after those checks
 and the user's review. Choose a finite polling budget and interval (the current
 helper accepts 30–1800 seconds and 5–60 seconds respectively). All explicitly

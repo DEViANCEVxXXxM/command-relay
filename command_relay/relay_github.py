@@ -208,12 +208,17 @@ class GitHubClient:
         server rules; the REST SHA condition protects against head changes.
         Base/check status can still change after inspection; server rules apply.
         """
+        return self._squash_merge(reviewed, confirmed=confirmed)
+
+    def _squash_merge(self, reviewed, *, confirmed=False, guard=None):
         if confirmed is not True or not isinstance(reviewed, PullRequest) or reviewed.repo != self.repo or not reviewed.ready:
             raise GitHubError('Merge not confirmed or reviewed snapshot is not ready.')
         fresh = self.inspect(reviewed.number)
         if fresh != reviewed or not fresh.ready:
             raise GitHubError('PR changed or is no longer ready; review again.')
         path = '/pulls/' + str(fresh.number)
+        if guard is not None:
+            guard()  # Last local policy check before the remote write.
         try:
             result = self._api(path + '/merge', 'PUT', {'sha': fresh.head_sha, 'merge_method': 'squash'})
             if not isinstance(result, dict) or result.get('merged') is not True:
@@ -229,17 +234,40 @@ class GitHubClient:
             raise MergeUnknown('Merge outcome unknown or denied. Refresh PR state before any retry; no branch cleanup attempted.') from None
         return merged_sha
 
-    def wait_and_merge(self, number, *, head, head_sha, base, base_sha, required_checks,
-                       confirmed=False, timeout=600, interval=15, progress=None):
-        """Task-level authorization for one pinned squash merge, after bounded CI polling.
+    def _require_automation_merge(self, workspace):
+        from .relay_permissions import allowed, read_automation_settings
+        if not allowed(read_automation_settings(), 'squash_merge',
+                       workspace=workspace, repository=self.repo):
+            raise GitHubError('Automatic squash merge is disabled for this workspace and repository.')
+        if workspace_repo(workspace).lower() != self.repo.lower():
+            raise GitHubError('Workspace origin no longer matches the authorized repository.')
 
-        A reviewed task must explicitly authorize the target and write. No writes on
-        import, no persistent authorization, no retry of uncertain writes or deletion.
-        The time budget bounds polling; individual CLI requests have their own timeout.
-        Server branch protections remain authoritative.
+    def wait_and_merge(self, number, *, head, head_sha, base, base_sha, required_checks,
+                       workspace=None, confirmed=False, timeout=600, interval=15, progress=None):
+        """One pinned automatic merge: explicit task review AND scoped opt-in.
+
+        Re-read policy and origin before polling, during polling, and immediately
+        before the write. Manual squash_merge remains a separate reviewed action.
+        Local checks cannot atomically pin external settings or GitHub state.
         """
         if confirmed is not True:
             raise GitHubError('Task-level squash merge was not explicitly authorized.')
+        def guard():
+            self._require_automation_merge(workspace)
+        ready = self._wait_for_ci(number, head=head, head_sha=head_sha, base=base,
+                                 base_sha=base_sha, required_checks=required_checks,
+                                 timeout=timeout, interval=interval, progress=progress, guard=guard)
+        return self._squash_merge(ready, confirmed=True, guard=guard)
+
+    def wait_for_ci(self, number, *, head, head_sha, base, base_sha, required_checks,
+                    timeout=600, interval=15, progress=None):
+        """Read-only bounded wait for an exact ready PR; never authorizes a write."""
+        return self._wait_for_ci(number, head=head, head_sha=head_sha, base=base,
+                                 base_sha=base_sha, required_checks=required_checks,
+                                 timeout=timeout, interval=interval, progress=progress)
+
+    def _wait_for_ci(self, number, *, head, head_sha, base, base_sha, required_checks,
+                     timeout, interval, progress, guard=None):
         _number(number); _label(head); _label(base); _sha(head_sha); _sha(base_sha)
         if head == base or head_sha == base_sha:
             raise GitHubError('Expected distinct head and base.')
@@ -253,6 +281,8 @@ class GitHubClient:
             raise GitHubError('Invalid CI polling budget or interval.')
         if progress is not None and not callable(progress):
             raise GitHubError('Invalid progress callback.')
+        if guard is not None:
+            guard()
         deadline = time.monotonic() + timeout
         transient = {'GitHub does not report a clean, mergeable PR.',
                      'At least one check is pending, failed or unknown.',
@@ -260,6 +290,8 @@ class GitHubClient:
                      'Check results are missing or exceed the supported limit.'}
         waiting = {'PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED', 'UNKNOWN'}
         while time.monotonic() < deadline:
+            if guard is not None:
+                guard()
             pr = self.inspect(number)
             if (pr.repo, pr.number, pr.head, pr.head_sha, pr.base, pr.base_sha) != (self.repo, number, head, head_sha, base, base_sha):
                 raise GitHubError('PR identity, head or base changed; review a new task.')
@@ -276,9 +308,7 @@ class GitHubClient:
             if progress is not None:
                 progress('CI_READY' if ready else 'WAITING_FOR_CI', len(names & successes), len(names))
             if ready and time.monotonic() < deadline:
-                # The core re-inspects the complete snapshot and binds the PUT to head SHA.
-                # Any exception, including MergeUnknown, exits without retry.
-                return self.squash_merge(pr, confirmed=True)
+                return pr
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break

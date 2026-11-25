@@ -69,3 +69,15 @@ class PermissionTests(unittest.TestCase):
     def test_grant_is_idempotent(self):
         s = p.with_permission({}, 'pr_create', enabled=True, **self.scope)
         self.assertEqual(s, p.with_permission(s, 'pr_create', enabled=True, **self.scope))
+
+    def test_fresh_settings_reject_duplicate_keys_and_invalid_data(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'settings.json'
+        with patch('command_relay.relay_core.SETTINGS', path):
+            self.assertEqual(p.read_automation_settings(), {})
+            for content in ('{"automation_permissions":{},"automation_permissions":{}}',
+                            '{"a":{"x":1,"x":2}}', 'not-json', '[]', ' ' * 1_000_001):
+                path.write_text(content, encoding='utf-8')
+                self.assertEqual(p.read_automation_settings(), {})
+            path.write_text('{"automation_permissions":{"version":1,"grants":[]}}', encoding='utf-8')
+            self.assertEqual(p.read_automation_settings(), {p.KEY: {'version': 1, 'grants': []}})

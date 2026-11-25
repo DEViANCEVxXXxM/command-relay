@@ -5,6 +5,7 @@ Not a sandbox or enforcement by itself. Callers must re-read policy immediately
 before a built-in write, verify the actual target, and separately confirm intent.
 No settings are written by this module.
 """
+import json
 import os
 from pathlib import Path
 import re
@@ -106,3 +107,26 @@ def with_permission(settings, action, *, enabled, workspace=None, repository=Non
     records = [{'action': a, 'workspace': w, 'repository': r}
                for a, w, r in sorted(grants, key=lambda g: tuple(v or '' for v in g))]
     return {**settings, KEY: {'version': 1, 'grants': records}}
+
+
+def read_automation_settings():
+    """Read fresh settings for a built-in write; malformed or ambiguous means deny."""
+    from .relay_core import SETTINGS
+
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError('Duplicate settings key')
+            result[key] = value
+        return result
+
+    try:
+        with SETTINGS.open('r', encoding='utf-8') as stream:
+            text = stream.read(1_000_001)
+        if len(text) > 1_000_000:
+            return {}
+        value = json.loads(text, object_pairs_hook=unique_pairs)
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, RecursionError):
+        return {}
