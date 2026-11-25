@@ -166,6 +166,7 @@ class App(QMainWindow):
         action(ctx,'AI context…',self.ai_context,True)
         git=menu.addMenu('Git')
         action(git,'Git dashboard',self.dashboard,True)
+        action(git,'GitHub pull requests…',self.github_prs,True)
         git.addSeparator()
         for name in GIT_ACTIONS:action(git,name,lambda n=name:self.run_git(n),True)
         reports=menu.addMenu('Reports')
@@ -590,6 +591,14 @@ class App(QMainWindow):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
         self.start_tool('Project context',lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
+    def github_prs(self):
+        if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
+            return self.error('Finish the active operation first')
+        from .relay_github_qt import GitHubDialog
+        dialog = GitHubDialog(self.cwd.text(), self)
+        dialog.detect_repo()
+        dialog.exec()
+
     def dashboard(self):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')

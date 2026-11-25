@@ -93,3 +93,34 @@ class GitHubTests(unittest.TestCase):
             self.assertEqual(run.call_args.kwargs['timeout'], 30)
         with patch('command_relay.relay_github.subprocess.run', side_effect=subprocess.TimeoutExpired('gh', 30)):
             with self.assertRaises(GitHubError): client.inspect(42)
+
+    def test_list_open_bounded_and_explicit_repo(self):
+        client = self.client(); client._json = Mock(return_value=[{'number': 42, 'title': 'Test'}])
+        self.assertEqual(client.list_open(), ((42, 'Test'),))
+        client._json.assert_called_once_with('pr', 'list', '--repo', 'github.com/owner/repo', '--state', 'open', '--limit', '100', '--json', 'number,title')
+        for invalid in (None, [None], [{'number': 0, 'title': 'Test'}], [{'number': 42, 'title': 'Test'}]*2, [{'number': 42, 'title': 'Test'}]*101):
+            client._json.return_value = invalid
+            with self.assertRaises(GitHubError): client.list_open()
+
+    def test_workspace_origin_is_explicit_and_never_discloses_credentials(self):
+        from command_relay.relay_github import workspace_repo
+        for url in ('https://github.com/owner/repo.git', 'git@github.com:owner/repo.git', 'ssh://git@github.com/owner/repo', 'https://github.com/owner/repo/'):
+            with patch('command_relay.relay_github.subprocess.run', return_value=subprocess.CompletedProcess([], 0, url+'\n', '')):
+                self.assertEqual(workspace_repo('.'), REPO)
+        for url in ('https://user:secret@github.com/owner/repo', 'https://evil.example/owner/repo', 'https://github.com/owner/repo\nhttps://github.com/owner/other'):
+            with patch('command_relay.relay_github.subprocess.run', return_value=subprocess.CompletedProcess([], 0, url+'\n', '')):
+                with self.assertRaises(GitHubError) as err: workspace_repo('.')
+                self.assertNotIn('secret', str(err.exception))
+
+    def test_status_packet_masks_nested_check_names_and_title(self):
+        from command_relay.relay_github import status_packet
+        import json
+        secret = 'ghp_' + 'x'*30
+        data = copy.deepcopy(DATA); data['title'] = 'token=' + secret
+        data['statusCheckRollup'][0]['name'] = 'CI ' + secret
+        packet = status_packet(parse_pr(REPO, 42, data, META), '2026-11-25T00:00:00+00:00', merge_sha=C, outcome='verified_merged')
+        self.assertEqual(packet['schema'], 'command-relay/github-pr-status-v1')
+        self.assertEqual(packet['verified_merge_sha'], C)
+        self.assertEqual(packet['merge_outcome'], 'verified_merged')
+        self.assertNotIn(secret, json.dumps(packet))
+        self.assertEqual(packet['privacy']['status'], 'redacted')

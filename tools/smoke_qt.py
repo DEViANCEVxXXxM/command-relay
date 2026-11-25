@@ -91,6 +91,53 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             finally:
                 window.cleanup_temp()
     print('Qt repeated-task confirmation checks passed (cancel and explicit rerun; no commands executed).')
+    # Mock all CLI traffic. Exercise the actual dialog, worker completion and confirmation.
+    from command_relay import relay_github_qt
+    from command_relay.relay_github import PullRequest, Check, MergeUnknown
+    from unittest.mock import Mock
+    import time
+    snapshot = PullRequest('owner/repo', 42, 'Test', 'main', 'feat/test', 'a'*40, 'b'*40,
+                           'OPEN', (Check('CI', 'SUCCESS'),), ())
+    client = Mock(); client.list_open.return_value = ((42, 'Test'),)
+    client.inspect.return_value = snapshot; client.squash_merge.return_value = 'c'*40
+    def wait_worker(dialog):
+        deadline = time.monotonic() + 5
+        while dialog.busy and time.monotonic() < deadline:
+            app.processEvents(); time.sleep(0.01)
+        assert not dialog.busy, 'GitHub worker did not complete'
+    with patch.object(relay_github_qt, 'GitHubClient', return_value=client):
+        dialog = relay_github_qt.GitHubDialog(str(root), window)
+        dialog.show(); dialog.repo.setText('owner/repo'); dialog.list_prs(); wait_worker(dialog)
+        assert dialog.prs.count() == 1
+        dialog.inspect_pr(); wait_worker(dialog)
+        assert dialog.merge_button.isEnabled()
+        def choose_merge(accept):
+            errors = []
+            def interact():
+                box = QApplication.activeModalWidget()
+                try:
+                    assert isinstance(box, QMessageBox)
+                    assert box.defaultButton() is box.button(QMessageBox.StandardButton.Cancel)
+                    assert 'b'*40 in box.text()
+                    if accept:
+                        next(b for b in box.buttons() if b.text() == 'Squash and merge').click()
+                    else: box.defaultButton().click()
+                except Exception as exc:
+                    errors.append(exc)
+                    if box is not None: box.reject()
+            QTimer.singleShot(0, interact); dialog.confirm_merge(); wait_worker(dialog)
+            assert not errors, errors
+        choose_merge(False); client.squash_merge.assert_not_called()
+        choose_merge(True); client.squash_merge.assert_called_once_with(snapshot, confirmed=True)
+        assert dialog.outcome == 'verified_merged' and dialog.merge_sha == 'c'*40
+        assert not dialog.merge_button.isEnabled()
+        dialog.inspect_pr(); wait_worker(dialog)
+        client.squash_merge.side_effect = MergeUnknown('mocked lost response')
+        choose_merge(True); assert dialog.outcome == 'unknown' and not dialog.merge_button.isEnabled()
+        assert client.squash_merge.call_count == 2
+        dialog.repo.setText('other/repo'); assert dialog.snapshot is None and not dialog.merge_button.isEnabled()
+        dialog.reject(); dialog.deleteLater(); app.processEvents()
+    print('Qt GitHub PR manager checks passed (mocked list, inspect, cancel, merge and unknown outcome; no network writes).')
     window.hide()
     window.deleteLater()
     app.processEvents()
