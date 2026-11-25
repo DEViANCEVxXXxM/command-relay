@@ -688,3 +688,85 @@ class InstallPlanTests(unittest.TestCase):
             self.skipTest('Symlinks unavailable')
         with self.assertRaisesRegex(u.UpdateError,'Unsafe installation path'):
             u.plan_installation(self.root,self.old,self.new)
+
+
+class InstallRehearsalTests(unittest.TestCase):
+    def setUp(self):
+        fixture = InstallPlanTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
+        self.old = fixture.old
+        self.new = fixture.package(u.VERSION, '4.10.0', dict(fixture.new_files, **{'README.md': b'new docs'}))
+
+    def test_success_and_restore(self):
+        original = u._verify_rehearsal_tree
+        states = []
+        def capture(root, files):
+            original(root, files)
+            states.append((root, (root/'Start.pyw').read_bytes()))
+        with patch.object(u, '_verify_rehearsal_tree', side_effect=capture):
+            result = u.rehearse_installation(self.old, self.new)
+        self.assertEqual(result.replaced, ('README.md', 'Start.pyw'))
+        self.assertTrue(result.rollback_verified)
+        self.assertEqual([data for _,data in states], [b'new launcher', b'Start.pyw'])
+        self.assertTrue(all(not root.exists() for root,_ in states))
+        self.assertEqual((self.fixture.root/'Start.pyw').read_bytes(), b'Start.pyw')
+        self.assertEqual((self.fixture.root/'settings.json').read_bytes(), b'preserve me')
+
+    def test_failure_after_one_replacement_restores(self):
+        original = u._replace_rehearsal_file
+        def fail(source, destination, expected, replacement):
+            if destination.name == 'Start.pyw' and 'incoming' in source.parts:
+                raise OSError('simulated failure')
+            original(source, destination, expected, replacement)
+        with patch.object(u, '_replace_rehearsal_file', side_effect=fail) as calls:
+            with self.assertRaisesRegex(u.UpdateError, 'original tree restored'):
+                u.rehearse_installation(self.old, self.new)
+        self.assertEqual([call.args[0].parent.name for call in calls.call_args_list], ['incoming','incoming','backup'])
+
+    def test_failure_after_replace_before_readback_restores(self):
+        original = u._replace_rehearsal_file
+        def fail(source, destination, expected, replacement):
+            original(source, destination, expected, replacement)
+            if destination.name == 'Start.pyw' and 'incoming' in source.parts:
+                raise OSError('simulated post-replace failure')
+        with patch.object(u, '_replace_rehearsal_file', side_effect=fail) as calls:
+            with self.assertRaisesRegex(u.UpdateError, 'original tree restored'):
+                u.rehearse_installation(self.old, self.new)
+        self.assertEqual([call.args[0].parent.name for call in calls.call_args_list], ['incoming','incoming','backup','backup'])
+
+    def test_rollback_failure_is_not_success(self):
+        original = u._replace_rehearsal_file
+        def fail(source, destination, expected, replacement):
+            if 'backup' in source.parts:
+                raise OSError('simulated rollback failure')
+            original(source, destination, expected, replacement)
+        with patch.object(u, '_replace_rehearsal_file', side_effect=fail):
+            with self.assertRaisesRegex(u.UpdateError, 'rollback could not be verified'):
+                u.rehearse_installation(self.old, self.new)
+
+    def test_bad_signature_before_disk(self):
+        from dataclasses import replace
+        with patch('tempfile.TemporaryDirectory') as scratch:
+            with self.assertRaises(u.UpdateError):
+                u.rehearse_installation(self.old, replace(self.new, signature=b'x'*64))
+            scratch.assert_not_called()
+
+    def test_unapproved_layout_before_disk(self):
+        bad = self.fixture.package(u.VERSION, '4.10.0', dict(self.fixture.new_files, **{'settings.json':b'bad'}))
+        with patch('tempfile.TemporaryDirectory') as scratch:
+            with self.assertRaisesRegex(u.UpdateError, 'layout'):
+                u.rehearse_installation(self.old, bad)
+            scratch.assert_not_called()
+
+    def test_backup_failure_before_replacement(self):
+        original = u._write_rehearsal_file
+        def fail(path, data):
+            if 'backup' in path.parts:
+                raise OSError('simulated backup failure')
+            original(path, data)
+        with patch.object(u, '_write_rehearsal_file', side_effect=fail), patch.object(u, '_replace_rehearsal_file') as replace_file:
+            with self.assertRaisesRegex(u.UpdateError, 'prepare or clean'):
+                u.rehearse_installation(self.old, self.new)
+            replace_file.assert_not_called()

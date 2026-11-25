@@ -582,3 +582,122 @@ def plan_installation(root, installed, target):
     changed = tuple(name for name in sorted(old_hashes) if old_hashes[name] != new_hashes[name])
     unchanged = tuple(name for name in sorted(old_hashes) if old_hashes[name] == new_hashes[name])
     return InstallPlan(root, VERSION, target.download.info.latest, changed, unchanged)
+
+
+@dataclass(frozen=True)
+class InstallRehearsal:
+    """Evidence from a disposable installation, never a live install result."""
+    current: str
+    target: str
+    replaced: tuple[str, ...]
+    rollback_verified: bool
+
+
+def _verified_program_bytes(signed):
+    import io
+    import zipfile
+    names = verify_publisher_package(signed.download, signed.manifest, signed.signature)
+    if set(names) != INSTALL_PROGRAM_FILES:
+        raise UpdateError('Unsupported managed program file layout.')
+    hashes = json.loads(signed.manifest.decode('utf-8'))['files']
+    prefix = f'command-relay-v{signed.download.info.latest}-windows/'
+    with zipfile.ZipFile(io.BytesIO(signed.download.archive)) as archive:
+        result = {}
+        for name in names:
+            with archive.open(prefix + name) as source:
+                data = source.read(MAX_MEMBER_BYTES + 1)
+            if len(data) > MAX_MEMBER_BYTES or hashlib.sha256(data).hexdigest() != hashes[name]:
+                raise UpdateError('Rehearsal package bytes differ from manifest.')
+            result[name] = data
+    return result
+
+
+def _write_rehearsal_file(path, data):
+    import os
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('xb') as output:
+        output.write(data)
+        output.flush()
+        os.fsync(output.fileno())
+    if path.read_bytes() != data:
+        raise UpdateError('Rehearsal file readback differs.')
+
+
+def _replace_rehearsal_file(source, destination, expected, replacement):
+    import os
+    _checked_path(source, directory=False)
+    _checked_path(destination, directory=False)
+    if source.read_bytes() != replacement or destination.read_bytes() != expected:
+        raise UpdateError('Rehearsal file changed before replacement.')
+    os.replace(source, destination)
+    if destination.read_bytes() != replacement:
+        raise UpdateError('Rehearsal replacement readback differs.')
+
+
+def _verify_rehearsal_tree(root, files):
+    for name, data in files.items():
+        path = root / name
+        _checked_path(path, directory=False)
+        if path.read_bytes() != data:
+            raise UpdateError('Rehearsal program tree differs.')
+
+
+def rehearse_installation(installed, target):
+    """Exercise backup, replacement and rollback on a fresh disposable tree.
+
+    No destination argument, permission grant, live installation, restart, or
+    execution. Both archives are authenticated before any disk write. Backups
+    are prepared and read back before replacement; rollback restores the full
+    signed original tree after success or a handled error. Atomic replacement
+    is per file, not atomic across the tree. A hard kill or a failure during
+    rollback is not recoverable by this rehearsal; durable recovery, process
+    exclusion and real installation authorization are separate future work.
+    """
+    import tempfile
+
+    if not all(isinstance(item, SignedUpdate) and isinstance(item.download, DownloadedUpdate)
+               and isinstance(item.download.info, UpdateInfo) for item in (installed, target)):
+        raise UpdateError('Expected two signed packages.')
+    if installed.download.info.latest != VERSION or target.download.info.current != VERSION:
+        raise UpdateError('Installation packages differ from the running version.')
+    old = _verified_program_bytes(installed)
+    new = _verified_program_bytes(target)
+    try:
+        with tempfile.TemporaryDirectory(prefix='command-relay-rehearsal-') as scratch:
+            base = Path(scratch).resolve()
+            root, backup, incoming = (base / name for name in ('portable', 'backup', 'incoming'))
+            root.mkdir()
+            for name, data in old.items():
+                _write_rehearsal_file(root / name, data)
+            plan = plan_installation(root, installed, target)
+            # Prepare all backups and replacements before modifying the tree.
+            for name in plan.replace:
+                _write_rehearsal_file(backup / name, old[name])
+                _write_rehearsal_file(incoming / name, new[name])
+            failed = False
+            try:
+                for name in plan.replace:
+                    _replace_rehearsal_file(incoming / name, root / name, old[name], new[name])
+                _verify_rehearsal_tree(root, new)
+            except (OSError, UpdateError):
+                failed = True
+            # Inspect the actual state, including a replacement that succeeded
+            # before an exception was raised. Do not overwrite unknown bytes.
+            try:
+                for name in reversed(plan.replace):
+                    destination = root / name
+                    _checked_path(destination, directory=False)
+                    actual = destination.read_bytes()
+                    if actual == old[name]:
+                        continue
+                    if actual != new[name]:
+                        raise UpdateError('Unknown rehearsal file state.')
+                    _replace_rehearsal_file(backup / name, destination, new[name], old[name])
+                _verify_rehearsal_tree(root, old)
+            except (OSError, UpdateError):
+                raise UpdateError('Rehearsal rollback could not be verified.') from None
+            if failed:
+                raise UpdateError('Rehearsal replacement failed; original tree restored.')
+            return InstallRehearsal(plan.current, plan.target, plan.replace, True)
+    except OSError:
+        raise UpdateError('Unable to prepare or clean rehearsal.') from None
