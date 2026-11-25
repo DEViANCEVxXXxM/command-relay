@@ -1,11 +1,18 @@
 # Changelog
 
-## 4.0.3 — repository structure
+## 4.0.3 — first public release
 
 - Moved runtime modules into `command_relay/` with package-relative imports and a module entry point.
 - Grouped icons, examples and manuals into dedicated directories; relocated diagnostic launcher to `tools/`.
 - Standardized dependency file as `requirements.txt`; updated CI, release allowlist and documentation.
 - Preserved portable root launchers, local data locations, packet schemas and startup acknowledgement. Extract into a new directory rather than overlaying older releases.
+
+- Fixed archive cache invalidation so changes in directory membership are detected even when directory timestamps do not change; bounded the archive scan and preserved explicit exports.
+- Fixed Windows launcher and extracted-package test path comparisons and isolated native error dialogs during automated testing.
+- Raised the minimum PySide6 version to 6.12.0 (below 7).
+- Qualified Python 3.14 in Windows and Linux unit-test CI; Windows Qt smoke checks cover Python 3.12 and 3.14. Python 3.11 is not currently in the CI matrix.
+- Updated GitHub Actions checkout, setup-python and dependency-review actions; improved README navigation, status badges and the GitHub Pages homepage.
+- Verified 118 regression tests and Qt startup acknowledgement scenarios locally on Windows with Python 3.14.4 and Qt 6.12.0.
 
 ## 4.0.2 — licensing and execution-risk acknowledgement
 
