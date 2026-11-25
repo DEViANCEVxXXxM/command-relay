@@ -2,7 +2,7 @@
 """Command Relay Qt workbench. Local-only, explicit execution."""
 import time
 STARTUP_T0 = time.perf_counter()
-import sys, os, pathlib, json, codecs, tempfile, subprocess, threading, shutil, difflib, re, datetime
+import sys, os, pathlib, json, codecs, tempfile, subprocess, threading, shutil, difflib, re, datetime, queue
 from PySide6.QtCore import Qt, QProcess, QTimer, QUrl, Signal, QObject, QEvent, QSize, QRect
 from PySide6.QtGui import QColor, QFont, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat, QDesktopServices, QShortcut, QKeySequence, QPainter, QIcon
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog,QSizePolicy,QLayout,QStyle)
@@ -121,6 +121,68 @@ class WorkerSignals(QObject):
     copyDone=Signal(object,object,object)
     warmDone=Signal(object,object)
     historyDone=Signal(object,object,object)
+
+class UpdatesDialog(QDialog):
+    """Explicit metadata lookup; no package download, policy mutation or install."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Updates'); self.resize(500, 270)
+        self.results = None
+        layout = QVBoxLayout(self)
+        def label(text):
+            item = QLabel(text); item.setWordWrap(True)
+            item.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(item)
+            return item
+        label('Current version: ' + VERSION)
+        label('Check official GitHub release metadata. No package is downloaded or installed.')
+        self.latest = label('Latest stable release: Not checked')
+        self.status = label('Select Check for updates to start.')
+        self.trust = label('Publisher signature: Not verified')
+        layout.addStretch()
+        row = QHBoxLayout(); layout.addLayout(row)
+        self.check_button = QPushButton('Check for updates'); self.check_button.setObjectName('updates_check')
+        self.check_button.setAutoDefault(False); self.check_button.clicked.connect(self.check); row.addWidget(self.check_button)
+        row.addStretch()
+        close = QPushButton('Close'); close.setAutoDefault(False); close.clicked.connect(self.reject); row.addWidget(close)
+        self.poll = QTimer(self); self.poll.setInterval(50); self.poll.timeout.connect(self.finish_check)
+
+    def check(self):
+        if self.results is not None: return
+        from . import relay_updates as updates
+        results = queue.Queue(maxsize=1)
+        self.results = results
+        self.check_button.setEnabled(False)
+        self.latest.setText('Latest stable release: Checking…')
+        self.status.setText('Requesting official release metadata…')
+        self.trust.setText('Publisher signature: Not verified')
+        # Worker owns only a Python queue, never a Qt object. Closing the dialog
+        # discards the result; the metadata request may finish afterward.
+        def work():
+            try:
+                info = updates.check_latest(VERSION)
+                availability, trust = updates.describe_release(info)
+                results.put((info.latest, availability, trust))
+            except Exception:
+                results.put((None, 'Release check failed. Retry later.', 'Publisher signature: Not verified'))
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except RuntimeError:
+            results.put((None, 'Release check could not start.', 'Publisher signature: Not verified'))
+        self.poll.start()
+
+    def finish_check(self):
+        if self.results is None: return
+        try: latest, status, trust = self.results.get_nowait()
+        except queue.Empty: return
+        self.poll.stop(); self.results = None
+        self.latest.setText('Latest stable release: ' + (latest or 'Unavailable'))
+        self.status.setText(status); self.trust.setText(trust)
+        self.check_button.setEnabled(True)
+
+    def done(self, result):
+        self.poll.stop(); self.results = None
+        super().done(result)
+
 
 class SafetyDialog(QDialog):
     """Only implemented automation is exposed; no network or task execution."""
@@ -409,6 +471,8 @@ class App(QMainWindow):
         self.settings_menu=menu.addMenu('Settings');self.settings_menu.setObjectName('workbench_settings')
         self.safety_action=action(self.settings_menu,'Safety settings…',self.safety_settings,True)
         self.safety_action.setObjectName('settings_safety')
+        self.updates_action=action(self.settings_menu,'Updates…',self.updates_settings,True)
+        self.updates_action.setObjectName('settings_updates')
         self.settings_menu.addSeparator()
         self.sidebar_action=self.settings_menu.addAction('Show sidebar');self.sidebar_action.setObjectName('settings_sidebar');self.sidebar_action.setCheckable(True)
         self.sidebar_action.setChecked(self.settings.get('show_sidebar',True) is not False)
@@ -836,6 +900,13 @@ class App(QMainWindow):
         dialog = SafetyDialog(self.cwd.text(), self)
         dialog.refresh()
         dialog.exec()
+
+    def updates_settings(self):
+        if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
+            return self.error('Finish the active operation first')
+        dialog = UpdatesDialog(self)
+        dialog.exec()
+        dialog.deleteLater()
 
     def github_prs(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:

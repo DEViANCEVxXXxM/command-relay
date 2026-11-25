@@ -381,6 +381,21 @@ class SignedUpdate:
     signature: bytes
 
 
+def describe_release(info):
+    """Presentation only: metadata is never publisher authentication."""
+    if not isinstance(info, UpdateInfo):
+        raise UpdateError('Invalid release metadata.')
+    current, latest = _version(info.current), _version(info.latest)
+    availability = ('Newer release available.' if latest > current else
+                    'Current version is up to date.' if latest == current else
+                    'Published stable release is older than this build.')
+    if info.manifest is None or info.signature is None:
+        trust = 'Signature assets missing. Signed installation unavailable.'
+    else:
+        trust = 'Signature assets listed. Publisher signature NOT verified.'
+    return availability, trust
+
+
 def download_signed_update(info):
     """Fetch the detached signature and manifest, then verify the exact ZIP.
 
