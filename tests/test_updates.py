@@ -394,3 +394,89 @@ class PublisherSignatureTests(unittest.TestCase):
         with patch.dict(sys.modules, {'cryptography.exceptions':None}):
             with self.assertRaisesRegex(u.UpdateError, 'unavailable'):
                 self.verify(raw, signature)
+
+
+class SignedDownloadTests(unittest.TestCase):
+    def fixture(self, alter_signature=False):
+        from dataclasses import replace
+        signer = PublisherSignatureTests()
+        signer.setUp()
+        raw = signer.raw()
+        sig = signer.key.sign(raw)
+        if alter_signature:
+            sig = bytes([sig[0] ^ 1]) + sig[1:]
+        download = signer.package
+        stem = download.info.archive.name[:-4]
+        checksum = (download.sha256 + '  ' + download.info.archive.name + '\n').encode('ascii')
+        def asset(name, ident, data):
+            return u.ReleaseAsset(name, ident, len(data), 'sha256:' + hashlib.sha256(data).hexdigest())
+        info = replace(download.info, checksum=asset(stem+'.sha256', 3, checksum),
+                       manifest=asset(stem+'.manifest.json', 4, raw),
+                       signature=asset(stem+'.manifest.sig', 5, sig))
+        return info, (raw, sig, checksum, download.archive), signer.pub
+
+    def test_discovery_signed_pair(self):
+        data = release()
+        for i, ext in enumerate(('.manifest.json', '.manifest.sig'), 4):
+            data['assets'].append(dict(data['assets'][0], id=i,
+                name=data['assets'][0]['name'][:-4]+ext))
+        info = u.parse_latest(data)
+        self.assertEqual(info.manifest.asset_id, 4)
+        self.assertEqual(info.signature.asset_id, 5)
+        for assets in (data['assets'][:-1], data['assets']+[data['assets'][-1]],
+                       data['assets'][:3]+[dict(data['assets'][3], name=data['assets'][3]['name'].replace('.sig','.json'))]):
+            with self.assertRaises(u.UpdateError):
+                u.parse_latest(dict(data, assets=assets))
+        data['assets'][-1]['id'] = 2
+        with self.assertRaises(u.UpdateError):
+            u.parse_latest(data)
+
+    @patch.object(u, 'build_opener')
+    def test_unsigned_release_discovery_but_no_signed_download(self, opener):
+        info, _, _ = DownloadTests().fixture()
+        self.assertTrue(info.available)
+        self.assertIsNone(info.manifest)
+        with self.assertRaises(u.UpdateError):
+            u.download_signed_update(info)
+        opener.assert_not_called()
+
+    @patch.object(u, 'build_opener')
+    def test_signed_download(self, opener):
+        info, contents, pub = self.fixture()
+        opener.return_value.open.side_effect = [AssetResponse(b) for b in contents]
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', pub):
+            result = u.download_signed_update(info)
+            self.assertEqual(u.verify_publisher_package(result.download, result.manifest, result.signature), ('Start.pyw',))
+        self.assertEqual(result.download.archive, contents[-1])
+        for call, asset in zip(opener.return_value.open.call_args_list,
+                               (info.manifest, info.signature, info.checksum, info.archive)):
+            self.assertEqual(call.args[0].full_url, info.release_url.replace('/tag/', '/download/')+'/'+asset.name)
+        self.assertEqual(opener.return_value.open.call_count, 4)
+
+    @patch.object(u, 'build_opener')
+    def test_reject_invalid_signed_metadata_before_network(self, opener):
+        from dataclasses import replace
+        info, _, _ = self.fixture()
+        for bad in (replace(info, manifest=replace(info.manifest, size=u.MAX_SIGNED_MANIFEST+1)),
+                    replace(info, signature=replace(info.signature, size=63)),
+                    replace(info, signature=replace(info.signature, asset_id=info.archive.asset_id)),
+                    replace(info, manifest=replace(info.manifest, digest=None)),
+                    replace(info, signature=replace(info.signature, name='other.sig'))):
+            with self.assertRaises(u.UpdateError):
+                u.download_signed_update(bad)
+        opener.assert_not_called()
+
+    @patch.object(u, 'build_opener')
+    def test_reject_invalid_signature_even_with_matching_asset_digest(self, opener):
+        info, contents, pub = self.fixture(alter_signature=True)
+        opener.return_value.open.side_effect = [AssetResponse(b) for b in contents]
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', pub), self.assertRaisesRegex(u.UpdateError, 'verification failed'):
+            u.download_signed_update(info)
+
+    @patch.object(u, 'build_opener')
+    def test_reject_tampered_manifest_before_archive_download(self, opener):
+        info, contents, _ = self.fixture()
+        opener.return_value.open.return_value = AssetResponse(b'x'*len(contents[0]))
+        with self.assertRaisesRegex(u.UpdateError, 'digest differs'):
+            u.download_signed_update(info)
+        self.assertEqual(opener.return_value.open.call_count, 1)
