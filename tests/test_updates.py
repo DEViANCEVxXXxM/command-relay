@@ -100,6 +100,17 @@ class UpdateTests(unittest.TestCase):
                 u.check_latest()
             self.assertNotIn('private', str(ctx.exception))
 
+    @patch.object(u, 'build_opener')
+    def test_http_error_response_is_closed(self, opener):
+        for operation in (lambda: u.check_latest(), lambda: u._download_asset(
+                u.parse_latest(release()), u.parse_latest(release()).archive)):
+            with self.subTest(operation=operation):
+                stream = io.BytesIO(b'private')
+                opener.return_value.open.side_effect = HTTPError(u.LATEST_API, 403, 'private', {}, stream)
+                with self.assertRaisesRegex(u.UpdateError, '403'):
+                    operation()
+                self.assertTrue(stream.closed)
+
 
 class AssetResponse(io.BytesIO):
     status = 200
@@ -1426,12 +1437,76 @@ class StandaloneTransactionTests(unittest.TestCase):
         result = json.loads(output)
         self.assertEqual(result['outcome'], 'commit')
         self.assertFalse(result['restart_performed'])
+        self.assertEqual(result['restart_status'], 'declined')
         self.assertFalse(self.marker.exists())
         from pathlib import Path
         self.assertTrue((Path(result['evidence'])/'intent.json').is_file())
         self.assertEqual((self.root/'Start.pyw').read_bytes(), b'new launcher')
         self.assertEqual((self.root/'settings.json').read_bytes(), b'preserve me')
         self.assertEqual(self.policy.read_bytes(), before)
+
+    def test_restart_after_commit_is_separate_and_reports_spawn(self):
+        self.grant()
+        def spawn(argv, **kwargs):
+            with u.installation_lock(self.root):
+                self.assertFalse(self.marker.exists())
+                self.assertEqual(argv[1:4], ['-I', '-B', '-c'])
+                self.assertEqual(argv[-1], str(self.root))
+                self.assertIn('Start.pyw', argv[4])
+                self.assertFalse(kwargs['shell'])
+                self.assertTrue(kwargs['close_fds'])
+            return object()
+        with patch('subprocess.Popen', side_effect=spawn) as launch:
+            status, output, _ = self.run_mode('install', 'INSTALL 4.10.0\nRESTART 4.10.0\n')
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output)['restart_status'], 'launched')
+        self.assertTrue(json.loads(output)['restart_performed'])
+        launch.assert_called_once()
+
+    def test_real_restart_launches_only_signed_disposable_entry_point(self):
+        import shutil
+        self.grant()
+        launcher = (b"from pathlib import Path\n"
+                    b"import sys\n"
+                    b"assert sys.flags.isolated and sys.dont_write_bytecode\n"
+                    b"Path('reports').mkdir(exist_ok=True)\n"
+                    b"Path('reports/restarted.txt').write_text('signed test launcher')\n")
+        target = self.f.fixture.package(u.VERSION, '4.10.0', dict(
+            self.f.fixture.new_files, **{'Start.pyw': launcher}))
+        shutil.rmtree(self.f.target)  # Disposable fixture only.
+        u._write_handoff_package(self.f.target, target)
+        status, output, _ = self.run_mode('install', 'INSTALL 4.10.0\n')
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output)['restart_status'], 'declined')
+        child = u._restart_verified_installation(self.root, self.f.target, '4.10.0')
+        try:
+            self.assertEqual(child.wait(timeout=30), 0)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.wait(timeout=10)
+        self.assertEqual((self.root/'reports/restarted.txt').read_text(), 'signed test launcher')
+        self.assertEqual((self.root/'settings.json').read_bytes(), b'preserve me')
+        self.assertFalse(list(self.root.rglob('__pycache__')))
+
+    def test_restart_denial_or_spawn_failure_preserves_committed_outcome(self):
+        self.grant()
+        with patch('subprocess.Popen', side_effect=OSError('spawn failed')):
+            status, output, _ = self.run_mode('install', 'INSTALL 4.10.0\nRESTART 4.10.0\n')
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(output)['restart_status'], 'failed')
+        self.assertFalse(json.loads(output)['restart_performed'])
+        self.assertFalse(self.marker.exists())
+        self.assertEqual((self.root/'Start.pyw').read_bytes(), b'new launcher')
+        with patch('subprocess.Popen') as launch:
+            (self.root/'Start.pyw').write_bytes(b'tampered')
+            with self.assertRaises(u.UpdateError):
+                u._restart_verified_installation(self.root, self.f.target, '4.10.0')
+            (self.root/'Start.pyw').write_bytes(b'new launcher')
+            self.marker.mkdir()
+            with self.assertRaises(u.UpdateError):
+                u._restart_verified_installation(self.root, self.f.target, '4.10.0')
+            launch.assert_not_called()
 
     def test_default_deny_and_cancel(self):
         before = self.f.snapshot()
