@@ -145,7 +145,7 @@ use `wait_for_ci` (read-only), report the ready PR and let the human review and
 merge through the existing UI. A grant does not replace explicit task review.
 The scope is path-based; it is not a sandbox or protection against arbitrary
 PowerShell, Python or Git commands. Other future automatic operations remain
-unimplemented. Open `More → Safety settings…` to review the resolved local
+unimplemented. Open `More → Settings → Safety settings…` to review the resolved local
 workspace and GitHub origin. Automatic squash merge is off until the user
 explicitly enables it and confirms Apply. Revoke the selected grant or all
 saved grants from that dialog. The separate `automation-permissions.json`
@@ -192,7 +192,7 @@ of execution even when one reviewed task contains the entire workflow.
 
 ## 5. Receiving and interpreting results
 
-The `Copy` button supports three modes (for large reports, wait for the Copied status before pasting): ordinary click copies best-effort masked JSON `command-relay/result-v1`; Shift+click copies masked text; Ctrl+click copies the RAW full report (Ctrl takes precedence). `Ctrl+Shift+C` in the main window also copies the full report. `History` lets the user select a specific run and use the same modifiers. `More → Reports → Open latest` opens `reports/latest.txt`; `More → Reports → Folder` opens the reports directory. `Find` or Ctrl+F reveals the search field; `More → View` controls Wrap output, Dense output and Show sidebar. The sidebar has only Steps and Scripts. The AI Copy JSON uses compact encoding; detected secret values are masked after evidence analysis. The terminal displays at most 6,000 blocks; its search and stage navigation are limited to the visible tail. Complete reports are saved on disk; unfinished reports may have a `.partial.txt` filename.
+The `Copy` button supports three modes (for large reports, wait for the Copied status before pasting): ordinary click copies best-effort masked JSON `command-relay/result-v1`; Shift+click copies masked text; Ctrl+click copies the RAW full report (Ctrl takes precedence). `Ctrl+Shift+C` in the main window also copies the full report. `History` lets the user select a specific run and use the same modifiers. `More → Reports → Open latest` opens `reports/latest.txt`; `More → Reports → Folder` opens the reports directory. `Find` or Ctrl+F reveals the search field; `More → Settings` controls Wrap output, Dense output and Show sidebar. The sidebar has only Steps and Scripts. The AI Copy JSON uses compact encoding; detected secret values are masked after evidence analysis. The terminal displays at most 6,000 blocks; its search and stage navigation are limited to the visible tail. Complete reports are saved on disk; unfinished reports may have a `.partial.txt` filename.
 
 Check the Result Packet fields:
 
@@ -265,7 +265,7 @@ AI context accepts selected UTF-8 text files inside the workspace (up to 128,000
 | No result / No report selected | Let the run finish or select the correct historical report. If saving failed, locate the partial file. |
 | An old or unrelated run was sent | State the expected task_id/command and ask the user to select the corresponding entry in History. |
 | Report is truncated or the error text is missing | Ctrl+click Copy or attach the full report-*.txt from More → Reports → Folder; for multiple runs use Export ZIP. Do not rerun unnecessarily. |
-| Lines do not fit or an early stage cannot be found | Enable More → View → Wrap output; open the complete report because the terminal retains only a bounded tail. |
+| Lines do not fit or an early stage cannot be found | Enable More → Settings → Wrap output; open the complete report because the terminal retains only a bounded tail. |
 | Exit 0 but PASS is missing or False | Do not treat the test as successful. Check its criteria and complete output. Correct the check if necessary rather than masking the failure. |
 | Nonzero exit, Cancelled, or Partial | Diagnose the cause from output; do not retry automatically or claim PASS. After cancellation, check the effects of earlier commands. |
 | Relay does not start / PySide6 missing | Check Python and install dependencies from the official release archive using `python -m pip install -r requirements.txt`; then open `Start.pyw`. For startup failures, ask for `startup.log` or use `tools/Start-Debug.cmd` (console intentionally visible). Do not change system protections. |
@@ -341,3 +341,5 @@ The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-lookin
 ### Accessible report export
 
 The main workbench keeps the existing Copy button and modifier shortcuts. More → Reports also exposes explicit AI result (masked), compact text (masked), and full report (RAW, unmasked) actions without modifier keys. Review any export before sharing; raw reports have no privacy masking. The editor, output, workspace and navigation controls have accessible names and visible keyboard focus.
+
+Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from More, the terminal and Ctrl+F. Language and update settings are planned, not implemented; no placeholder actions are shown.
