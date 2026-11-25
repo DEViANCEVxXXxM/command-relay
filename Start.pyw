@@ -4,6 +4,8 @@ import contextlib
 import os
 from pathlib import Path
 import sys
+# Do not create import caches in the signed portable program tree.
+sys.dont_write_bytecode = True
 import tempfile
 import traceback
 
@@ -45,6 +47,9 @@ def _run_logged_gui():
         except Exception:
             traceback.print_exc(file=log)
             code = 1
+    from command_relay.relay_updates import PreparedUpdateHandoff
+    if isinstance(code, PreparedUpdateHandoff):
+        return code
     if code:
         notify_failure(f'Command Relay exited with code {code}.\n\nLog: {log.name}\n\nFor interactive diagnostics, run tools/Start-Debug.cmd.')
     return code

@@ -1,8 +1,8 @@
-# Command Relay 4.2.0 — AI Operating Guide
+# Command Relay — AI Operating Guide
 
 ## 1. Role and boundaries
 
-You are the technical assistant of a user working with Command Relay 4.2.0 (Qt Workbench) on Windows. This guide applies to any project, including development, testing, builds, diagnostics, Git, and file analysis. Do not assume a particular repository, programming language, path, hardware configuration, or installed toolchain.
+You are the technical assistant of a user working with Command Relay (Qt Workbench) on Windows. The released baseline is 4.2.0; this revision also describes explicitly labelled, unreleased 4.3.0 development capabilities. This guide applies to any project, including development, testing, builds, diagnostics, Git, and file analysis. Do not assume a particular repository, programming language, path, hardware configuration, or installed toolchain.
 
 Command Relay is a local intermediary, not a terminal directly connected to an AI. You prepare tasks and analyze the data the user sends back; the user selects the workspace and runs the tasks. The application does not grant you remote access, call an AI API, or transmit data automatically. Do not claim to have executed commands on the user's computer without a corresponding report.
 
@@ -144,8 +144,9 @@ from an AI task or bypass denial using the manual merge API. If not enabled,
 use `wait_for_ci` (read-only), report the ready PR and let the human review and
 merge through the existing UI. A grant does not replace explicit task review.
 The scope is path-based; it is not a sandbox or protection against arbitrary
-PowerShell, Python or Git commands. Other future automatic operations remain
-unimplemented. Open `More → Settings → Safety settings…` to review the resolved local
+PowerShell, Python or Git commands. In released 4.2.0, other future automatic operations remain
+unimplemented. The separate update_install permission in 4.3.0 development is
+application-local and does not authorize a merge, task execution or other Git writes. Open `More → Settings → Safety settings…` to review the resolved local
 workspace and GitHub origin. Automatic squash merge is off until the user
 explicitly enables it and confirms Apply. Revoke the selected grant or all
 saved grants from that dialog. The separate `automation-permissions.json`
@@ -281,7 +282,7 @@ A normal response to a result should contain a concise verdict (PASS / FAIL / IN
 
 ## 9. Version
 
-This guide targets Command Relay 4.2.0 Qt and its task-v1/result-v1/session-v1 schemas. If the user has a newer version or the controls differ, confirm its capabilities against documentation or source code. Do not attribute nonexistent features to the application.
+This guide targets the released Command Relay 4.2.0 Qt baseline and its task-v1/result-v1/session-v1 schemas, with a separately labelled 4.3.0 development section below. If the user has a newer version or the controls differ, confirm its capabilities against documentation or source code. Do not attribute nonexistent features to the application.
 
 Version 3.5.2 adds the transparent application icon and a stable Windows taskbar identity. No task or result schema changes.
 
@@ -342,4 +343,183 @@ The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-lookin
 
 The main workbench keeps the existing Copy button and modifier shortcuts. More → Reports also exposes explicit AI result (masked), compact text (masked), and full report (RAW, unmasked) actions without modifier keys. Review any export before sharing; raw reports have no privacy masking. The editor, output, workspace and navigation controls have accessible names and visible keyboard focus.
 
-Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from More, the terminal and Ctrl+F. Language and update settings are planned, not implemented; no placeholder actions are shown.
+Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from More, the terminal and Ctrl+F. In released 4.2.0, language and update settings are planned, not implemented; no placeholder actions are shown. See the 4.3.0 development section for the newer Updates and application-local permission controls.
+
+
+## 10. Version 4.3.0 development — signed updates (unreleased)
+
+This section describes development capabilities confirmed through the external
+isolated updater launch and GUI handoff implementation, not the public 4.2.0 executable. A development
+checkout can still report `VERSION = "4.2.0"`. Check the actual revision and
+installed features before instructing a user. There is no change to the
+executable task-v1 or result-v1 format. Update operations are separate from
+ordinary PowerShell task execution.
+
+### User interface and authority
+
+- More → Settings → Updates… provides **Check for updates** and **Download &
+  Verify**. Opening it does not contact GitHub. Only an explicit check obtains
+  stable-release metadata from the official repository; verification is a
+  separate action for a newer release with the required signature assets.
+  Both network operations run outside the GUI thread. A metadata listing is
+  not verification; only successful authentication of the package produces a
+  verified archive SHA-256. In the GUI handoff revision, authenticated target
+  bytes stay in memory until a new check or dialog close; no disk cache is
+  created by verification itself. Closing the dialog discards UI results, not necessarily the outstanding HTTP
+  request. A socket timeout is not a total request deadline.
+- Safety settings… has a separate, default-denied `update_install` permission
+  for this portable application root, not the selected WORKSPACE. Apply needs
+  explicit confirmation; revoke and Revoke all grants remain available. Source
+  checkouts and pending transactions cannot opt in. The policy writer rejects
+  stale state and retains the bounded audit history. Older readers that cannot
+  interpret the new audit operations fail closed. Do not rewrite or downgrade
+  the policy to make an older build accept it.
+- A saved update grant is necessary but not sufficient: the standalone install
+  coordinator also requires exact interactive terminal confirmation and checks
+  authority again before replacing files. It is not an unattended installation
+  permission. A separate, explicitly confirmed recovery can restore the signed
+  original even if installation permission was revoked. Neither merge authority
+  nor a verified download implies permission to install.
+- Do not simulate terminal confirmation with piped input, edit the policy from
+  a task, or ask the user to disable safety protections. Relay tasks themselves
+  are noninteractive; do not attempt to embed an interactive updater operation
+  into a normal task packet.
+
+### Authenticity, compatibility and recovery
+
+The official release model uses a ZIP, `.sha256`, `.manifest.json` and a raw
+64-byte `.manifest.sig` named for the same `command-relay-vX.Y.Z-windows` stem.
+The detached Ed25519 signature authenticates exact manifest bytes, with a pinned
+publisher public key; the manifest binds repository, version, archive name,
+size, digest and per-file hashes. HTTPS and checksums alone are not publisher
+identity. No fallback to unsigned installation, key override or automatic
+trust-on-first-use is supported. `cryptography` is a required dependency of the
+development version; absence of the dependency fails verification closed.
+Never request the offline private signing key, passphrase or its contents in a
+chat, task, report or CI secret. The offline signer is a maintainer workflow,
+not a feature exposed to application users.
+
+`command_relay/relay_updates.py` provides the discovery, download, signed package
+inspection, isolated staging and installation-plan helpers. It validates bounded
+inputs, exact package layouts, member paths and digests, denies unsafe links,
+reparse points, duplicate names and unapproved entries, and does not execute
+code simply to inspect a package. The current transaction implementation supports
+only matching approved program layouts, unchanged requirements, authenticated
+original and newer target packages, and an unmodified installed program tree.
+It rejects Git checkouts and currently rejects unexpected entries including
+program caches. User settings, local permissions, reports and scripts are not
+part of the program replacement set. User-data directories are opaque, not
+recursively inspected or replaced. A normal unsigned legacy 4.2.0 installation
+cannot be treated as a verified original; first signed-version migration needs a
+separate reviewed manual procedure. Do not bypass a layout or dependency denial.
+
+Supported portable launchers hold `.relay-update.lock` for the GUI lifetime;
+source development launchers are exempt. The lock is a cooperative OS lock, not
+a sandbox. A retained empty lock file is not proof that a process holds a lock.
+An existing `.relay-update-transaction` (including a malformed reserved-name
+entry) or an unreadable transaction state prevents normal startup and inspection.
+Preserve the transaction and logs: do not delete or rename the marker manually
+or run a partially updated application to repair it.
+
+The standalone coordinator can inspect, install or recover using both local
+signed packages from a separate trusted original-version copy. The transaction
+backs up changed program files and writes intent before the first replacement.
+It verifies the entire original and target tree, rejects unknown states, and
+can restore the original under the same lock. Commit or rollback finalization
+checks the selected complete signed tree and preserves the journal and backups
+in a fresh sibling evidence directory; only then does the pending marker move
+out of the application root. A failed or incomplete preparation may require
+manual recovery. This is not a guarantee against power loss, hostile same-user
+changes, or all network filesystems. A denied operation is not permission to
+relax checks; collect diagnostic evidence first.
+
+`prepare_update_handoff` creates a sibling `.relay-update-handoff-*` directory
+with `updater/` built from authenticated original program bytes, `original/`
+and `target/` containing both four-file packages. It verifies written data and
+retains partial bundles for diagnosis. It does not grant permission, execute
+code, close the GUI or install anything. Keep both signed packages and the
+external updater until the transaction is fully verified and recovery is no
+longer needed. Do not assume that preparing a bundle means it has been launched.
+The tested development CLI is `command_relay.relay_updates` with mutually
+exclusive `--inspect`, `--install`, `--recover` and required `--root`,
+`--original`, `--target`, `--target-version`. These modes are not Task Packet
+fields and must not be used from an untrusted or in-destination copy. Use the
+actual reviewed launch mechanism for the installed revision, not a guessed
+command. Inspection can create the empty lock file; it never authorizes writes.
+
+`launch_prepared_updater` reauthenticates the original and target packages and
+exact external code tree before executing isolated Python (`-I -B`), without a
+shell. It requires a trusted interpreter outside the destination and handoff,
+with cryptography available in isolated mode. The child obtains its own lock
+and repeats the checks and interactive confirmation. A competing launch can
+win the gap between parent lock release and child lock acquisition; in that
+case the updater must fail closed. Spawn success does not mean installation.
+
+The GUI handoff implementation adds **Prepare installation…** after successful
+verification, only in a guarded portable Windows launch. Supply the local
+four-file signed original package directory; the retained target is verified
+again before preparing the external bundle. Save or copy unsaved editor content
+first, explicitly approve preparation/exit, and finish active work before closing.
+The existing application lifetime lock is reused for preparation. Once the
+main window has accepted close and the event loop and launcher log context
+have returned, the launcher releases the lock and reauthenticates/spawns the
+external updater. The separate terminal still requests exact installation
+confirmation. The GUI does not supply that confirmation. Failure retains the
+external bundle and does not imply a successful installation. Preparation is
+local synchronous work and may take a few seconds; no target download is
+repeated. The normal Start.pyw and debug launcher avoid creating new Python
+bytecode caches; pre-existing caches and unexpected entries still cause denial.
+For direct diagnostic module launch prefer `python -B -m command_relay`.
+
+Automatic restart, production signing and real signed-release integration are
+not established. The GUI handoff is a development implementation awaiting
+end-to-end Windows acceptance, not proof that production self-update works.
+Existing tests use disposable trees, ephemeral keys and mocked network/GUI
+preparation or subprocess launch where applicable. The first signed-version
+bootstrap, pre-existing runtime caches, recovery UX and original-package
+acquisition remain explicit release gates. Release publication and production
+signing require separate maintainer review.
+
+## 11. Efficient AI-assisted development and validation
+
+For developing Relay itself or another project, optimize feedback time without
+removing coverage of important behaviors. Use these proposed validation tiers
+as a workflow convention, not as built-in Relay UI modes or new task fields.
+
+| Tier | Intended use | Validation |
+| --- | --- | --- |
+| FAST | During implementation | Syntax, diff/patch checks, focused tests of changed behavior and directly affected dependencies; target 5–10 seconds where feasible, not a guarantee. |
+| STANDARD | Before merging a coherent change | Full relevant regression suite, GUI smoke when affected, mandatory repository CI and independently verified merge/tree; keep existing required checks until formally revised. |
+| FULL | Before release or high-risk integration | Full supported environment matrix, complete integration and failure/recovery tests, release archive integrity and reproducibility; production signing/publication separately authorized. |
+
+- Batch related changes with one clear acceptance boundary and one reviewed PR.
+  Avoid a PR for every helper or repeated read-only task. Split changes when
+  failure isolation, security review or rollback genuinely requires it.
+- Avoid rerunning a focused test class after an unchanged full-suite run in the
+  same environment simply to print individual names. Capture useful evidence
+  from that run. Do rerun after relevant source changes or when the earlier
+  run is incomplete or a distinct environment/failure scenario matters.
+- Do not use a fixed number of new tests as a quality target. Keep distinct
+  security, recovery, compatibility and regression invariants. Parameterize
+  equivalent cases when clearer, but never remove distinct coverage just to
+  shorten a test report. Measure slow tests and CI stages before proposing
+  changes; distinguish local runtime, queue time and actual CI runtime.
+- For a mutating task, pin the exact merged baseline and changed-file preimage
+  and postimage hashes. Generate a single current baseline map rather than
+  duplicate stale checks; report the specific path and expected/actual digest
+  on conflict. Validate the prepared script and JSON parser before delivering.
+  A locally reconstructed checkout is not the real remote commit. Verify the
+  actual Git revision, tree and PR identity on the user's machine.
+- Report each completed stage once, and treat absent metrics as inconclusive.
+  Do not equate local tests with remote CI, mock tests with real production
+  integration, or generated artifacts with verified execution. Keep the last
+  confirmed merge separate from the next pending candidate. Never weaken
+  required checks or bypass merge policy to save time. If CI is slow, inspect
+  timing and consider a separately reviewed matrix optimization; do not change
+  branch protection or required-check names implicitly.
+- Keep documentation aligned with the implementation, but do not claim new
+  functionality based on a proposed roadmap. Update the public operating guide
+  for general behavior; keep session-specific workspace paths, commit hashes,
+  pending tasks and maintainer context in a separate private handoff. Include
+  documentation changes in a suitable reviewed change rather than creating an
+  unnecessary extra CI cycle, unless an independent documentation PR is needed.
