@@ -1075,3 +1075,107 @@ with installation_lock(Path(sys.argv[1])):
             if child.poll() is None:
                 child.kill()
             child.communicate(timeout=10)
+
+
+class StandaloneUpdaterTests(unittest.TestCase):
+    def setUp(self):
+        fixture = InstallPlanTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.fixture = fixture
+        self.root = fixture.root
+        self.original = self.root.parent / 'original'
+        self.target = self.root.parent / 'target'
+        for folder, package in ((self.original, fixture.old), (self.target, fixture.new)):
+            folder.mkdir()
+            stem = package.download.info.archive.name[:-4]
+            (folder / (stem + '.zip')).write_bytes(package.download.archive)
+            (folder / (stem + '.sha256')).write_bytes(
+                f'{package.download.sha256}  {stem}.zip\n'.encode('ascii'))
+            (folder / (stem + '.manifest.json')).write_bytes(package.manifest)
+            (folder / (stem + '.manifest.sig')).write_bytes(package.signature)
+
+    def args(self):
+        return ['--inspect', '--root', str(self.root), '--original', str(self.original),
+                '--target', str(self.target), '--target-version', '4.10.0']
+
+    def snapshot(self):
+        return {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*')
+                if p.is_file() and p.name != u.UPDATE_LOCK_NAME}
+
+    def run_child(self, *, ephemeral=True):
+        import subprocess
+        import sys
+        if ephemeral:
+            # Test-only injection in the child; the production CLI has no key override.
+            code = ('from command_relay import relay_updates as u; '
+                    'u.PUBLISHER_PUBLIC_KEY=bytes.fromhex(' + repr(self.fixture.key.public_key().public_bytes_raw().hex())
+                    + '); raise SystemExit(u.updater_main())')
+            command = [sys.executable, '-B', '-c', code]
+        else:
+            command = [sys.executable, '-B', '-m', 'command_relay.relay_updates']
+        return subprocess.run(command + self.args(), capture_output=True, text=True, timeout=30)
+
+    def test_independent_preflight_and_preservation(self):
+        before = self.snapshot()
+        result = self.run_child()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertEqual(data['replace'], ['Start.pyw'])
+        self.assertEqual(data['current'], u.VERSION)
+        self.assertEqual(data['target'], '4.10.0')
+        self.assertFalse(data['installation_authorized'])
+        self.assertEqual(before, self.snapshot())
+        with u.installation_lock(self.root):
+            pass
+
+    def test_busy_installation_denied(self):
+        before = self.snapshot()
+        with u.installation_lock(self.root):
+            result = self.run_child()
+            self.assertEqual(result.returncode, 1)
+            self.assertIn('lock', result.stderr.lower())
+            self.assertFalse(result.stdout)
+        self.assertEqual(before, self.snapshot())
+
+    def test_production_cli_rejects_ephemeral_key(self):
+        result = self.run_child(ephemeral=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('signature verification failed', result.stderr)
+        self.assertFalse(result.stdout)
+
+    def test_modified_checksum_denied(self):
+        next(self.target.glob('*.sha256')).write_bytes(b'bad')
+        with self.assertRaisesRegex(u.UpdateError, 'checksum'):
+            u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
+
+    def test_bad_signature_and_missing_asset_denied(self):
+        signature = next(self.target.glob('*.sig'))
+        signature.write_bytes(b'x'*64)
+        with self.assertRaisesRegex(u.UpdateError, 'signature verification failed'):
+            u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
+        signature.unlink()
+        with self.assertRaises(u.UpdateError):
+            u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
+
+    def test_modified_installation_denied(self):
+        (self.root/'Start.pyw').write_bytes(b'changed')
+        before = self.snapshot()
+        result = self.run_child()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('differs from signed package', result.stderr)
+        self.assertEqual(before, self.snapshot())
+
+    def test_no_install_mode_or_key_override(self):
+        import subprocess
+        import sys
+        for option in ('--install', '--public-key'):
+            result = subprocess.run([sys.executable, '-B', '-m', 'command_relay.relay_updates',
+                                     *self.args(), option], capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 2)
+            self.assertFalse(result.stdout)
+
+    def test_oversized_signature_denied(self):
+        next(self.target.glob('*.sig')).write_bytes(b'x'*65)
+        with self.assertRaisesRegex(u.UpdateError, 'size limit'):
+            u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
