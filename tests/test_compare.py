@@ -45,4 +45,28 @@ class CompareTests(unittest.TestCase):
     def test_artifact_header_excluded(self):
         p,t=self.add(1);t=t.replace('Command file: test.json','Command file: test.json\nARTIFACT=/tmp/header');self.assertEqual(result_packet(t,p.name)['artifacts']['items'],[])
 
+    def test_pre_run_matching_and_latest_verdict(self):
+        p,header=self.add(1);self.assertEqual(c.previous_run(self.root,header)['verdict'],'PASS')
+        fail,_=self.add(2,'COUNT=0');self.add(3,task='other')
+        r=c.previous_run(self.root,header);self.assertEqual((r['report_file'],r['verdict']),(fail.name,'FAIL'))
+        self.add(4,cancelled=True);self.assertEqual(c.previous_run(self.root,header)['verdict'],'CANCELLED')
+        self.add(5,partial=True);self.assertEqual(c.previous_run(self.root,header)['verdict'],'INCOMPLETE')
+    def test_pre_run_identity_isolation(self):
+        _,header=self.add(1)
+        other=self.root/'empty';other.mkdir()
+        self.assertEqual(c.previous_run(other,header)['status'],'no_match')
+        for n,kw in enumerate([{'workspace':self.root/'other'},{'task':'other'},{'script':'d'},{'prepared':'e'},{'spec':{'exit_code':0}}],2):
+            _,t=self.add(n,**kw)
+            (self.root/f'report-20261125-070000-{n:06d}.txt').unlink()
+            self.assertEqual(c.previous_run(self.root,t)['status'],'no_match')
+        _,t=self.add(7,edited=True);self.assertEqual(c.previous_run(self.root,t)['status'],'not_applicable')
+    def test_pre_run_bounded_history(self):
+        _,header=self.add(1);self.add(2,task='other')
+        with patch.object(c,'MAX_HEADERS',1):self.assertEqual(c.previous_run(self.root,header)['status'],'limited')
+        with patch.object(c,'MAX_ENTRIES',1):self.assertEqual(c.previous_run(self.root,header)['status'],'limited')
+        with patch.object(c,'MAX_BASELINE_BYTES',1):self.assertEqual(c.previous_run(self.root,header)['verdict'],'NOT_EVALUATED')
+        with patch.object(c.os,'scandir',side_effect=PermissionError):self.assertEqual(c.previous_run(self.root,header)['status'],'unavailable')
+    def test_pre_run_missing_history(self):
+        _,header=self.add(1);self.assertEqual(c.previous_run(self.root/'missing',header)['status'],'no_match')
+
 if __name__=='__main__':unittest.main()

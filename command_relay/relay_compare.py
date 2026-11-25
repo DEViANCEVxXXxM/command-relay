@@ -93,3 +93,60 @@ def compare_previous(path, text, current):
     except (OSError,ValueError,RecursionError,OverflowError,KeyError,TypeError):
         out['reason']='Prior report could not be read or interpreted'
     return out
+
+
+def previous_run(reports, header):
+    """Find the newest identical archived task before Run; never authorize execution.
+
+    Search is bounded and uses the same lexical identity as result comparison.
+    A missing or unreadable history is not proof that a task has never run.
+    """
+    ident = identity(header)
+    if ident is None:
+        return {'status': 'not_applicable'}
+    root = pathlib.Path(reports)
+    names = []
+    try:
+        with os.scandir(root) as entries:
+            for n, entry in enumerate(entries):
+                if n >= MAX_ENTRIES:
+                    return {'status': 'limited', 'reason': 'Archive directory limit reached.'}
+                if NAME.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
+                    names.append(entry.name)
+        for name in sorted(names, reverse=True)[:MAX_HEADERS]:
+            path = root / name
+            if path.is_symlink():
+                continue
+            with path.open('rb') as stream:
+                head = stream.read(MAX_HEADER_BYTES)
+                if identity(head.decode('utf-8', 'replace')) != ident:
+                    continue
+                result = {'status': 'matched', 'report_file': name, 'verdict': 'NOT_EVALUATED'}
+                if '.partial.' in name:
+                    return dict(result, verdict='INCOMPLETE')
+                size = os.fstat(stream.fileno()).st_size
+                if size > MAX_BASELINE_BYTES:
+                    return dict(result, reason='Matching report exceeds the scan limit.')
+                stream.seek(0)
+                data = stream.read(MAX_BASELINE_BYTES + 1)
+            if len(data) != size or len(data) > MAX_BASELINE_BYTES or not data.startswith(head):
+                return dict(result, reason='Matching report changed while reading.')
+            text = data.decode('utf-8', 'replace')
+            if identity(text) != ident:
+                return dict(result, reason='Matching report identity changed while reading.')
+            packet = result_packet(text, name, full=True)
+            if not packet['report_complete']:
+                return dict(result, verdict='INCOMPLETE')
+            if packet['cancelled']:
+                return dict(result, verdict='CANCELLED')
+            verdict = packet['assertions']['status']
+            return dict(result, verdict=verdict, process_exit=packet['process_exit'])
+        if len(names) > MAX_HEADERS:
+            return {'status': 'limited', 'reason': 'Older archive headers were not checked.'}
+        return {'status': 'no_match', 'reason': 'No matching report in the checked history.'}
+    except FileNotFoundError:
+        if not root.exists():
+            return {'status': 'no_match', 'reason': 'No archive directory exists.'}
+        return {'status': 'unavailable', 'reason': 'An archive disappeared during the check.'}
+    except (OSError, ValueError, RecursionError, OverflowError, KeyError, TypeError):
+        return {'status': 'unavailable', 'reason': 'History could not be read or interpreted.'}
