@@ -823,6 +823,27 @@ def rehearse_interrupted_installation(installed, target):
 
 
 UPDATE_LOCK_NAME = '.relay-update.lock'
+UPDATE_TRANSACTION_NAME = '.relay-update-transaction'
+
+
+class RecoveryRequired(UpdateError):
+    """A pending or unreadable transaction prevents normal startup."""
+
+
+def _require_no_pending_transaction(root):
+    """Call while holding installation_lock, before normal startup or planning.
+
+    Any reserved name, including a malformed file, link or directory, blocks
+    startup. Do not read, execute, remove or trust the marker here. A future
+    updater must create the marker before replacing anything and retain it
+    until the entire tree has been verified. This is a cooperative gate only.
+    """
+    try:
+        for entry in Path(root).iterdir():
+            if entry.name.rstrip(' .').casefold() == UPDATE_TRANSACTION_NAME.casefold():
+                raise RecoveryRequired('An unfinished update requires recovery. Preserve the transaction files.')
+    except OSError:
+        raise RecoveryRequired('Unable to check for an unfinished update. Preserve the installation.') from None
 
 
 @contextmanager
@@ -918,6 +939,7 @@ def startup_installation_guard(root):
         yield
     else:
         with installation_lock(root):
+            _require_no_pending_transaction(root)
             yield
 
 
@@ -964,6 +986,7 @@ def inspect_local_installation(root, original_folder, target_folder, target_vers
     The result is only a snapshot; a later installer must revalidate under lock.
     """
     with installation_lock(root):
+        _require_no_pending_transaction(root)
         # The original version is already installed; the synthetic comparison
         # baseline permits the existing newer-release validator to check it.
         original = load_local_signed_package(original_folder, VERSION, current='0.0.0')

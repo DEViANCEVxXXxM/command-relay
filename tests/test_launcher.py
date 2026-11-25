@@ -30,9 +30,9 @@ else:
 
 
 class LauncherTests(unittest.TestCase):
-    def launch(self, body, *, busy=False):
+    def launch(self, body, *, busy=False, pending=False):
         from contextlib import nullcontext
-        from command_relay.relay_updates import installation_lock
+        from command_relay.relay_updates import installation_lock, UPDATE_TRANSACTION_NAME
         with tempfile.TemporaryDirectory(prefix='relay launcher ') as tmp:
             root = pathlib.Path(tmp)
             shutil.copyfile((pathlib.Path(__file__).resolve().parents[1]).joinpath('Start.pyw'), root / 'Start.pyw')
@@ -43,8 +43,10 @@ class LauncherTests(unittest.TestCase):
             for name in ('__main__.py', 'relay_updates.py', 'relay_version.py'):
                 shutil.copyfile(source / name, package / name)
             (package / 'relay_qt.py').write_text('def main():\n' + ''.join('    ' + line + '\n' for line in body.splitlines()), encoding='utf-8')
-            if busy:
+            if busy or pending:
                 (root / 'startup.log').write_text('unchanged', encoding='utf-8')
+            if pending:
+                (root / UPDATE_TRANSACTION_NAME).mkdir()
             with installation_lock(root.resolve()) if busy else nullcontext():
                 proc = subprocess.run([sys.executable, '-B', '-c', LAUNCHER_HARNESS, str(root / 'Start.pyw')], cwd=root.parent,
                                       capture_output=True, text=True, timeout=15)
@@ -79,3 +81,9 @@ class LauncherTests(unittest.TestCase):
         proc, log = self.launch('return 9')
         self.assertEqual(proc.returncode, 9)
         self.assertIn('exited with code 9', proc.stderr)
+
+    def test_pending_transaction_launcher_preserves_log(self):
+        proc, log = self.launch('raise AssertionError("must not run")', pending=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(log, 'unchanged')
+        self.assertIn('unfinished update', proc.stderr)
