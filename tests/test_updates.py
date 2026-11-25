@@ -1196,3 +1196,105 @@ class StandaloneUpdaterTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
         with u.installation_lock(self.root):
             pass
+
+
+class PendingTransactionTests(unittest.TestCase):
+    def setUp(self):
+        fixture = InstallPlanTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        self.f = fixture
+        self.root = fixture.root
+        self.marker = self.root / u.UPDATE_TRANSACTION_NAME
+        self.new_files = dict(fixture.new_files, **{'README.md': b'new readme'})
+        self.target = fixture.package(u.VERSION, '4.10.0', self.new_files)
+
+    def apply(self):
+        return u._apply_pending_update(self.root, self.f.old, self.target)
+
+    def recover(self):
+        return u._recover_pending_update(self.root, self.f.old, self.target)
+
+    def assert_tree(self, files):
+        for name, data in files.items():
+            self.assertEqual((self.root / name).read_bytes(), data, name)
+        self.assertEqual((self.root / 'settings.json').read_bytes(), b'preserve me')
+
+    def test_apply_and_recover_existing_tree(self):
+        plan = self.apply()
+        self.assertEqual(plan.replace, ('README.md', 'Start.pyw'))
+        self.assert_tree(self.new_files)
+        with self.assertRaises(u.RecoveryRequired):
+            with u.startup_installation_guard(self.root):
+                self.fail('pending transaction allowed startup')
+        self.assertEqual(self.recover(), plan.replace)
+        self.assert_tree(self.f.files)
+        self.assertEqual(self.recover(), ())
+        self.assertTrue(self.marker.is_dir())
+
+    def test_busy_lock_denies_before_marker(self):
+        with u.installation_lock(self.root):
+            with self.assertRaises(u.UpdateError):
+                self.apply()
+        self.assertFalse(self.marker.exists())
+        self.assert_tree(self.f.files)
+
+    def test_failure_after_replacement_can_recover(self):
+        original = u._replace_rehearsal_file
+        def interrupted(*args):
+            original(*args)
+            raise OSError('simulated interruption')
+        with patch.object(u, '_replace_rehearsal_file', side_effect=interrupted):
+            with self.assertRaises(u.UpdateError):
+                self.apply()
+        self.assertTrue(self.marker.is_dir())
+        self.assertEqual(self.recover(), ('README.md',))
+        self.assert_tree(self.f.files)
+
+    def test_corrupt_backup_denies_all_restore(self):
+        self.apply()
+        (self.marker / 'backup' / 'Start.pyw').write_bytes(b'bad')
+        with self.assertRaisesRegex(u.UpdateError, 'backup differs'):
+            self.recover()
+        self.assert_tree(self.new_files)
+
+    def test_unknown_program_file_denies_all_restore(self):
+        self.apply()
+        (self.root / 'Start.pyw').write_bytes(b'unknown')
+        with self.assertRaisesRegex(u.UpdateError, 'Unknown pending'):
+            self.recover()
+        self.assertEqual((self.root / 'README.md').read_bytes(), b'new readme')
+        self.assertEqual((self.root / 'Start.pyw').read_bytes(), b'unknown')
+
+    def test_unapproved_entry_denies_before_marker(self):
+        (self.root / 'command_relay' / 'unexpected.py').write_bytes(b'not executed')
+        with self.assertRaisesRegex(u.UpdateError, 'Unexpected entry'):
+            self.apply()
+        self.assertFalse(self.marker.exists())
+        self.assert_tree(self.f.files)
+
+    def test_incomplete_preparation_keeps_gate(self):
+        with patch.object(u, '_write_rehearsal_file', side_effect=OSError('disk full')):
+            with self.assertRaises(u.UpdateError):
+                self.apply()
+        self.assertTrue(self.marker.is_dir())
+        self.assert_tree(self.f.files)
+        with self.assertRaises(u.UpdateError):
+            self.recover()
+        with self.assertRaises(u.RecoveryRequired):
+            with u.startup_installation_guard(self.root):
+                self.fail('incomplete transaction allowed startup')
+
+    def test_bad_signature_denies_before_marker(self):
+        from dataclasses import replace
+        self.target = replace(self.target, signature=b'x'*64)
+        with self.assertRaises(u.UpdateError):
+            self.apply()
+        self.assertFalse(self.marker.exists())
+        self.assert_tree(self.f.files)
+
+    def test_pending_marker_denies_second_apply(self):
+        self.apply()
+        with self.assertRaises(u.RecoveryRequired):
+            self.apply()
+        self.assert_tree(self.new_files)
