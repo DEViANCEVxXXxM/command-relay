@@ -31,6 +31,34 @@ class ExportTests(unittest.TestCase):
         a=self.report();p=self.report(2);cached=ex.build_ai(p,warm=True);a.write_bytes(a.read_bytes()+b'changed');self.assertFalse(cached.fresh())
     def test_archive_changed(self):
         p=self.report();cached=ex.build_ai(p,warm=True);self.report(2);self.assertFalse(cached.fresh())
+    def test_archive_changed_with_constant_directory_metadata(self):
+        p = self.report()
+        original_stamp = ex.stamp
+        fixed_directory_stamp = original_stamp(self.root)
+        with patch.object(ex, 'stamp', side_effect=lambda path: (
+                fixed_directory_stamp if path == self.root else original_stamp(path))):
+            cached = ex.build_ai(p, warm=True)
+            self.assertIsNotNone(cached)
+            self.assertTrue(cached.fresh())
+            added = self.report(2)
+            self.assertFalse(cached.fresh())
+            refreshed = ex.build_ai(p, warm=True)
+            self.assertIsNotNone(refreshed)
+            self.assertTrue(refreshed.fresh())
+            added.unlink()
+            self.assertFalse(refreshed.fresh())
+
+    def test_archive_limit_disables_warm_cache_not_explicit_copy(self):
+        p = self.report()
+        with patch.object(ex, 'MAX_ENTRIES', 1):
+            cached = ex.build_ai(p, warm=True)
+            self.assertIsNotNone(cached)
+            self.report(2)
+            self.assertFalse(cached.fresh())
+            self.assertIsNone(ex.build_ai(p, warm=True))
+            with patch.object(ex, 'archive_stamp', side_effect=AssertionError('explicit copy must not scan for cache reuse')):
+                self.assertIsNone(ex.build_copy(p, 'ai')[2])
+
     def test_missing_report(self):
         p=self.report();cached=ex.build_ai(p,warm=True);p.unlink();self.assertFalse(cached.fresh());self.assertIsNotNone(ex.build_copy(p,'ai')[2])
     def test_warm_limit_explicit_copy(self):

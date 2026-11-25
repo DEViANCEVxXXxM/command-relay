@@ -2,11 +2,12 @@
 """Local, protected export preparation. No clipboard access or network."""
 from dataclasses import dataclass
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
 from .relay_core import compact_report, result_packet
-from .relay_compare import compare_previous
+from .relay_compare import MAX_ENTRIES, compare_previous
 from .relay_intelligence import report_meta
 from .relay_privacy import protect_packet, protect_text
 
@@ -18,20 +19,35 @@ def stamp(path):
     return st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns
 
 
+def archive_stamp(path):
+    """Bounded directory snapshot; timestamps alone can miss new entries."""
+    before = stamp(path)
+    names = []
+    with os.scandir(path) as entries:
+        for entry in entries:
+            if len(names) >= MAX_ENTRIES:
+                return None
+            names.append(entry.name)
+    if stamp(path) != before:
+        return None
+    return before, tuple(sorted(names))
+
+
 @dataclass(frozen=True)
 class PreparedExport:
     path: Path
     info: tuple
     text: str
     report_stamp: tuple
-    directory_stamp: tuple
+    directory_stamp: Optional[tuple]
     baseline: Optional[Path] = None
     baseline_stamp: Optional[tuple] = None
 
     def fresh(self):
         try:
-            return (stamp(self.path) == self.report_stamp and
-                    stamp(self.path.parent) == self.directory_stamp and
+            return (self.directory_stamp is not None and
+                    stamp(self.path) == self.report_stamp and
+                    archive_stamp(self.path.parent) == self.directory_stamp and
                     (self.baseline is None or stamp(self.baseline) == self.baseline_stamp))
         except OSError:
             return False
@@ -40,8 +56,11 @@ class PreparedExport:
 def build_ai(path, warm=False):
     path = Path(path)
     before = stamp(path)
-    directory_before = stamp(path.parent)
     if warm and before[2] > WARM_MAX_BYTES:
+        return None
+    # Explicit copies are freshly built and never reused by the GUI.
+    directory_before = archive_stamp(path.parent) if warm else None
+    if warm and directory_before is None:
         return None
     with path.open('rb') as f:
         data = f.read(WARM_MAX_BYTES + 1) if warm else f.read()
