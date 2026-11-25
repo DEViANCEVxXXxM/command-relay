@@ -136,3 +136,63 @@ class PermissionTests(unittest.TestCase):
             p.revoke_all_permissions(grant)
             self.assertFalse(p.allowed(p.policy_snapshot(), 'squash_merge', **self.scope))
             self.assertFalse(lock.exists())
+
+    def test_audit_records_grant_revoke_and_revoke_all(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            grant = p.save_merge_permission({}, enabled=True, **self.scope)
+            self.assertEqual(p.policy_snapshot(), grant)
+            event = p.audit_history(grant)['events'][0]
+            self.assertEqual((event['operation'], event['repository'], event['count']), ('grant', 'owner/repo', 1))
+            self.assertNotIn(str(self.a), p.audit_text(grant))
+            self.assertEqual(p.save_merge_permission(grant, enabled=True, **self.scope), grant)
+            revoked = p.save_merge_permission(grant, enabled=False, **self.scope)
+            again = p.save_merge_permission(revoked, enabled=True, **self.scope)
+            final = p.revoke_all_permissions(again)
+            self.assertEqual([e['operation'] for e in p.audit_history(final)['events']], ['grant', 'revoke', 'grant', 'revoke_all'])
+            self.assertEqual(p.revoke_all_permissions(final), final)
+            self.assertFalse(p.allowed(p.read_automation_settings(), 'squash_merge', **self.scope))
+
+    def test_audit_atomic_failure_keeps_previous_grant_and_history(self):
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            grant = p.save_merge_permission({}, enabled=True, **self.scope)
+            before = path.read_bytes()
+            with patch('command_relay.relay_core.atomic_text', side_effect=OSError('write failed')):
+                with self.assertRaises(OSError):
+                    p.revoke_all_permissions(grant)
+            self.assertEqual(path.read_bytes(), before)
+            self.assertEqual(p.policy_snapshot(), grant)
+            self.assertFalse(path.with_name('.automation-permissions.lock').exists())
+
+    def test_audit_bounded_and_legacy_policy(self):
+        import json
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        legacy = p.with_permission({}, 'squash_merge', enabled=True, **self.scope)
+        path.write_text(json.dumps(legacy), encoding='utf-8')
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'), patch.object(p, 'MAX_AUDIT_EVENTS', 2):
+            self.assertEqual(p.audit_history(p.policy_snapshot())['events'], [])
+            self.assertTrue(p.allowed(p.read_automation_settings(), 'squash_merge', **self.scope))
+            current = legacy
+            for enabled in (False, True, False):
+                current = p.save_merge_permission(current, enabled=enabled, **self.scope)
+            history = p.audit_history(p.policy_snapshot())
+            self.assertEqual(history['dropped'], 1)
+            self.assertEqual([e['operation'] for e in history['events']], ['grant', 'revoke'])
+
+    def test_invalid_audit_fails_closed_without_rewriting(self):
+        import json
+        from unittest.mock import patch
+        path = Path(self.tmp.name) / 'automation-permissions.json'
+        with patch.object(p, 'policy_path', return_value=path), patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            grant = p.save_merge_permission({}, enabled=True, **self.scope)
+            grant[p.AUDIT_KEY]['events'][0]['count'] = True
+            path.write_text(json.dumps(grant), encoding='utf-8')
+            before = path.read_bytes()
+            self.assertFalse(p.allowed(p.read_automation_settings(), 'squash_merge', **self.scope))
+            with self.assertRaises(ValueError):
+                p.revoke_all_permissions(grant)
+            self.assertEqual(path.read_bytes(), before)

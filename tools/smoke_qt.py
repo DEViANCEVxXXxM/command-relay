@@ -89,6 +89,9 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         with patch.object(dialog, 'confirm', return_value=True): dialog.revoke_all(); wait_safety()
         assert not dialog.toggle.isChecked()
         assert not permissions.allowed(permissions.read_automation_settings(), 'squash_merge', workspace=tmp, repository='owner/repo')
+        assert dialog.history_button.isEnabled()
+        assert [e['operation'] for e in permissions.audit_history(dialog.snapshot)['events']] == ['grant', 'revoke_all']
+        assert 'revoke_all' in permissions.audit_text(dialog.snapshot)
         dialog.reject()
     print('Qt safety settings checks passed (default deny, cancel, opt-in, revoke; temporary policy only).')
     # Exercise the real pre-run gate without actually executing or journaling a command.

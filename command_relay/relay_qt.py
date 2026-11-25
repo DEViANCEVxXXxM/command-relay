@@ -147,6 +147,7 @@ class SafetyDialog(QDialog):
         def button(text, fn):
             b = QPushButton(text); b.setAutoDefault(False); b.clicked.connect(fn); row.addWidget(b); return b
         self.refresh_button = button('Refresh', self.refresh)
+        self.history_button = button('History…', self.show_history)
         self.revoke_button = button('Revoke all grants…', self.revoke_all)
         self.save_button = button('Apply change…', self.save)
         self.close_button = button('Close', self.reject)
@@ -156,6 +157,7 @@ class SafetyDialog(QDialog):
         self.toggle.setEnabled(not self.busy and self.scope is not None and self.snapshot is not None)
         self.save_button.setEnabled(self.toggle.isEnabled())
         self.revoke_button.setEnabled(not self.busy and self.snapshot is not None)
+        self.history_button.setEnabled(not self.busy and self.snapshot is not None)
         self.refresh_button.setEnabled(not self.busy); self.close_button.setEnabled(not self.busy)
 
     def start(self, fn):
@@ -184,6 +186,16 @@ class SafetyDialog(QDialog):
             except Exception: return None, snapshot, 'No supported GitHub origin. You can still revoke all saved grants.'
             return scope, snapshot, 'Local policy loaded. No changes made.'
         self.start(work)
+
+    def show_history(self):
+        from . import relay_permissions as policy
+        if self.busy or self.snapshot is None: return
+        dialog = QDialog(self); dialog.setWindowTitle('Permission history'); dialog.resize(680, 360)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit(); view.setReadOnly(True); view.setAccessibleName('Local permission history')
+        view.setPlainText(policy.audit_text(self.snapshot)); layout.addWidget(view)
+        close = QPushButton('Close'); close.clicked.connect(dialog.accept); layout.addWidget(close)
+        dialog.exec()
 
     def confirm(self, text):
         box = QMessageBox(QMessageBox.Icon.Warning, 'Confirm permission change', text, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, self)

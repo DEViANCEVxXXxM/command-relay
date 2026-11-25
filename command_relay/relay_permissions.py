@@ -5,6 +5,8 @@ Not a sandbox or enforcement by itself. Callers must re-read policy immediately
 before a built-in write, verify the actual target, and separately confirm intent.
 Policy storage is isolated from ordinary workbench settings.
 """
+from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,8 @@ WORKSPACE_ACTIONS = frozenset({'unattended_run', 'parallel_run'})
 APPLICATION_ACTIONS = frozenset({'update_install'})
 ACTIONS = GIT_ACTIONS | WORKSPACE_ACTIONS | APPLICATION_ACTIONS
 MAX_GRANTS = 256
+AUDIT_KEY = "permission_audit"
+MAX_AUDIT_EVENTS = 128
 _REPO = re.compile(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}', re.ASCII)
 
 
@@ -109,6 +113,67 @@ def with_permission(settings, action, *, enabled, workspace=None, repository=Non
     return {**settings, KEY: {'version': 1, 'grants': records}}
 
 
+def audit_history(snapshot):
+    """Validate and return bounded local history; legacy policies have none."""
+    value = snapshot.get(AUDIT_KEY, {'version': 1, 'dropped': 0, 'events': []})
+    if (not isinstance(value, dict) or set(value) != {'version', 'dropped', 'events'}
+            or type(value['version']) is not int or value['version'] != 1
+            or type(value['dropped']) is not int or not 0 <= value['dropped'] <= 2**63 - 1
+            or not isinstance(value['events'], list) or len(value['events']) > MAX_AUDIT_EVENTS):
+        raise ValueError('Invalid permission history')
+    for e in value['events']:
+        if not isinstance(e, dict) or set(e) != {'utc', 'operation', 'repository', 'workspace_sha256', 'count'}:
+            raise ValueError('Invalid permission event')
+        if not isinstance(e['utc'], str) or not re.fullmatch(r'[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z', e['utc']):
+            raise ValueError('Invalid permission event timestamp')
+        datetime.fromisoformat(e['utc'][:-1] + '+00:00')
+        if type(e['count']) is not int or not 1 <= e['count'] <= MAX_GRANTS:
+            raise ValueError('Invalid permission event count')
+        if e['operation'] in ('grant', 'revoke'):
+            if (e['count'] != 1 or _repository(e['repository']) != e['repository']
+                    or not isinstance(e['workspace_sha256'], str)
+                    or not re.fullmatch(r'[0-9a-f]{64}', e['workspace_sha256'])):
+                raise ValueError('Invalid permission event scope')
+        elif e['operation'] != 'revoke_all' or e['repository'] is not None or e['workspace_sha256'] is not None:
+            raise ValueError('Invalid permission event operation')
+    return value
+
+
+def _record_change(current, updated, operation):
+    old, new = _grants(current), _grants(updated)
+    if old == new:
+        return current
+    changed = new - old if operation == 'grant' else old - new
+    if operation == 'revoke_all':
+        repository, workspace_hash = None, None
+    else:
+        _, workspace, repository = next(iter(changed))
+        workspace_hash = hashlib.sha256(workspace.encode('utf-8', errors='surrogatepass')).hexdigest()
+    event = {'utc': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+             'operation': operation, 'repository': repository,
+             'workspace_sha256': workspace_hash, 'count': len(changed)}
+    history = audit_history(current)
+    events = [*history['events'], event]
+    updated = {**updated, AUDIT_KEY: {'version': 1,
+        'dropped': min(2**63 - 1, history['dropped'] + max(0, len(events) - MAX_AUDIT_EVENTS)),
+        'events': events[-MAX_AUDIT_EVENTS:]}}
+    audit_history(updated)
+    return updated
+
+
+def audit_text(snapshot):
+    """Local read-only display; no report/session export."""
+    history = audit_history(snapshot)
+    lines = ['Local permission history (latest first; not tamper-proof).',
+             f"Older entries discarded: {history['dropped']}", '']
+    for e in reversed(history['events']):
+        scope = (e['repository'] + ' / workspace ' + e['workspace_sha256'][:12]) if e['repository'] else 'all workspaces'
+        lines.append(f"{e['utc']}  {e['operation']}  ({e['count']})  {scope}")
+    if not history['events']:
+        lines.append('No recorded changes. Existing grants may predate this history.')
+    return '\n'.join(lines)
+
+
 def policy_path():
     from .relay_core import SETTINGS
     return SETTINGS.with_name('automation-permissions.json')
@@ -132,9 +197,10 @@ def policy_snapshot():
     if len(text) > 1_000_000:
         raise ValueError('Policy file too large')
     value = json.loads(text, object_pairs_hook=unique_pairs)
-    if not isinstance(value, dict) or set(value) - {KEY}:
+    if not isinstance(value, dict) or set(value) - {KEY, AUDIT_KEY}:
         raise ValueError('Invalid policy file')
     _grants(value)
+    audit_history(value)
     return value
 
 
@@ -163,14 +229,14 @@ def save_merge_permission(expected, *, workspace, repository, enabled):
             raise ValueError('Workspace origin changed; refresh before saving')
         return with_permission(current, 'squash_merge', enabled=enabled,
                                workspace=workspace, repository=repository)
-    return _save_policy(expected, change)
+    return _save_policy(expected, change, 'grant' if enabled else 'revoke')
 
 
 def revoke_all_permissions(expected):
-    return _save_policy(expected, lambda _: {KEY: {'version': 1, 'grants': []}})
+    return _save_policy(expected, lambda _: {KEY: {'version': 1, 'grants': []}}, 'revoke_all')
 
 
-def _save_policy(expected, change):
+def _save_policy(expected, change, operation):
     from .relay_core import atomic_text
     path = policy_path()
     lock = path.with_name('.automation-permissions.lock')
@@ -183,7 +249,12 @@ def _save_policy(expected, change):
             raise ValueError('Policy changed; refresh before saving')
         updated = change(current)
         _grants(updated)
-        atomic_text(path, json.dumps(updated, ensure_ascii=False, indent=2))
+        updated = _record_change(current, updated, operation)
+        if updated != current:
+            text = json.dumps(updated, ensure_ascii=False, indent=2)
+            if len(text) > 1_000_000:
+                raise ValueError('Policy file too large')
+            atomic_text(path, text)
         return updated
     finally:
         lock.unlink()
