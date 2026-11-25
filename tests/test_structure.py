@@ -29,6 +29,7 @@ class StructureTests(unittest.TestCase):
         fake_qt = ModuleType('command_relay.relay_qt')
         fake_qt.main = Mock(return_value=7)
         with patch.dict(sys.modules, {'command_relay.relay_qt': fake_qt}):
+            sys.modules.pop('command_relay.__main__', None)
             with self.assertRaises(SystemExit) as raised:
                 runpy.run_module('command_relay', run_name='__main__')
         self.assertEqual(raised.exception.code, 7)
@@ -56,3 +57,68 @@ assert VERSION == '4.2.0'
             self.assertEqual(proc.returncode, 0, proc.stderr)
             self.assertFalse((extracted / 'reports').exists())
             self.assertFalse((extracted / 'settings.json').exists())
+
+
+class StartupGuardTests(unittest.TestCase):
+    def test_portable_lifetime_lock_and_exit_status(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import installation_lock, UpdateError
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            def gui():
+                with self.assertRaises(UpdateError):
+                    with installation_lock(root):
+                        pass
+                return 7
+            with patch.object(launcher, 'ROOT', root):
+                self.assertEqual(launcher.main(gui), 7)
+            with installation_lock(root):
+                pass
+
+    def test_busy_startup_does_not_invoke_gui(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import installation_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            gui, notify = Mock(), Mock()
+            with installation_lock(root), patch.object(launcher, 'ROOT', root):
+                self.assertEqual(launcher.main(gui, notify), 1)
+            gui.assert_not_called()
+            notify.assert_called_once()
+
+    def test_source_checkout_stays_launchable_without_lock(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import installation_lock, UpdateError, UPDATE_LOCK_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / '.git').mkdir()
+            with patch.object(launcher, 'ROOT', root):
+                self.assertEqual(launcher.main(lambda: 0), 0)
+            self.assertFalse((root / UPDATE_LOCK_NAME).exists())
+            with self.assertRaises(UpdateError):
+                with installation_lock(root):
+                    pass
+
+    def test_callback_exception_releases_lock(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import installation_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with patch.object(launcher, 'ROOT', root), self.assertRaisesRegex(RuntimeError, 'test failure'):
+                launcher.main(Mock(side_effect=RuntimeError('test failure')))
+            with installation_lock(root):
+                pass
+
+    def test_console_free_launcher_does_not_open_log_when_busy(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import installation_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            log = root / 'startup.log'
+            log.write_bytes(b'unchanged')
+            entry = runpy.run_path(str(ROOT / 'Start.pyw'))['main']
+            notify = Mock()
+            with installation_lock(root), patch.object(launcher, 'ROOT', root), patch.dict(entry.__globals__, {'ROOT': root, 'notify_failure': notify}):
+                self.assertEqual(entry(), 1)
+            self.assertEqual(log.read_bytes(), b'unchanged')
+            notify.assert_called_once()
