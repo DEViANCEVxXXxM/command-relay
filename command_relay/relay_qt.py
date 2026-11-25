@@ -960,4 +960,5 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    from .__main__ import main as launch
+    raise SystemExit(launch(main))

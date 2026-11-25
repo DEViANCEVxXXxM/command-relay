@@ -30,16 +30,24 @@ else:
 
 
 class LauncherTests(unittest.TestCase):
-    def launch(self, body):
+    def launch(self, body, *, busy=False):
+        from contextlib import nullcontext
+        from command_relay.relay_updates import installation_lock
         with tempfile.TemporaryDirectory(prefix='relay launcher ') as tmp:
             root = pathlib.Path(tmp)
             shutil.copyfile((pathlib.Path(__file__).resolve().parents[1]).joinpath('Start.pyw'), root / 'Start.pyw')
             package = root / 'command_relay'
             package.mkdir()
             (package / '__init__.py').write_text('', encoding='utf-8')
-            (package / '__main__.py').write_text(body, encoding='utf-8')
-            proc = subprocess.run([sys.executable, '-c', LAUNCHER_HARNESS, str(root / 'Start.pyw')], cwd=root.parent,
-                                  capture_output=True, text=True, timeout=15)
+            source = pathlib.Path(__file__).resolve().parents[1] / 'command_relay'
+            for name in ('__main__.py', 'relay_updates.py', 'relay_version.py'):
+                shutil.copyfile(source / name, package / name)
+            (package / 'relay_qt.py').write_text('def main():\n' + ''.join('    ' + line + '\n' for line in body.splitlines()), encoding='utf-8')
+            if busy:
+                (root / 'startup.log').write_text('unchanged', encoding='utf-8')
+            with installation_lock(root.resolve()) if busy else nullcontext():
+                proc = subprocess.run([sys.executable, '-B', '-c', LAUNCHER_HARNESS, str(root / 'Start.pyw')], cwd=root.parent,
+                                      capture_output=True, text=True, timeout=15)
             return proc, (root / 'startup.log').read_text(encoding='utf-8')
 
     def test_normal_launch(self):
@@ -60,3 +68,14 @@ class LauncherTests(unittest.TestCase):
         proc, log = self.launch('raise SystemExit(7)\n')
         self.assertEqual(proc.returncode, 7)
         self.assertIn('Application exited with: 7', log)
+
+    def test_busy_launcher_preserves_log(self):
+        proc, log = self.launch('raise AssertionError("must not run")', busy=True)
+        self.assertEqual(proc.returncode, 1)
+        self.assertEqual(log, 'unchanged')
+        self.assertIn('installation is busy', proc.stderr)
+
+    def test_return_code_preserved(self):
+        proc, log = self.launch('return 9')
+        self.assertEqual(proc.returncode, 9)
+        self.assertIn('exited with code 9', proc.stderr)

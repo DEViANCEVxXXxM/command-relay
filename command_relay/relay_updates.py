@@ -891,3 +891,31 @@ def installation_lock(root):
         # delete the file, including on exceptions or lock acquisition failure.
         if locked:
             os.close(fd)
+
+
+@contextmanager
+def startup_installation_guard(root):
+    """Guard supported portable launchers; leave source checkouts usable.
+
+    The installer must still refuse any Git checkout. A marker in an ancestor
+    is also a checkout exclusion. This is cooperative, not an update grant.
+    """
+    root = Path(root)
+    try:
+        if not root.is_absolute() or '..' in root.parts or root.parent == root:
+            raise UpdateError('Expected an absolute non-root installation directory.')
+        checkout = False
+        for parent in (*reversed(root.parents), root):
+            _checked_path(parent, directory=True)
+            try:
+                (parent / '.git').lstat()
+            except FileNotFoundError:
+                continue
+            checkout = True
+    except (OSError, ValueError, TypeError):
+        raise UpdateError('Unable to inspect startup installation.') from None
+    if checkout:
+        yield
+    else:
+        with installation_lock(root):
+            yield
