@@ -42,7 +42,7 @@ class StructureTests(unittest.TestCase):
                 z.extractall(dest)
             extracted = dest / archive.stem
             code = '''from pathlib import Path
-from command_relay import relay_core, relay_compare, relay_export, relay_features, relay_github, relay_intelligence, relay_privacy, relay_session, relay_view, relay_windows
+from command_relay import relay_core, relay_compare, relay_export, relay_features, relay_github, relay_intelligence, relay_permissions, relay_privacy, relay_session, relay_view, relay_windows
 from command_relay.relay_terms import disclaimer_text
 from command_relay.relay_version import VERSION
 assert relay_core.ROOT.samefile(Path.cwd()), (relay_core.ROOT, Path.cwd())
