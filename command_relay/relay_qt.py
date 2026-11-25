@@ -19,6 +19,7 @@ from . import relay_intelligence as intelligence
 from . import relay_session as session
 from . import relay_privacy as privacy
 from . import relay_export as exports
+from . import relay_compare as comparison
 from . import relay_view as view
 
 STARTUP_MARKS = {'imports_ms': round((time.perf_counter()-STARTUP_T0)*1000)}
@@ -130,7 +131,7 @@ class App(QMainWindow):
         central=QWidget();self.setCentralWidget(central);v=QVBoxLayout(central);v.setContentsMargins(12,9,12,8);v.setSpacing(7)
         row=QHBoxLayout();h=QLabel('COMMAND RELAY');h.setStyleSheet('font-size:20px;font-weight:700;color:#f0f0f0');row.addWidget(h);row.addWidget(QLabel(f'{VERSION}  /  QT WORKBENCH'));row.addStretch();self.more=QPushButton('More');row.addWidget(self.more);self.more.setToolTip('Optional tools and display preferences');v.addLayout(row)
         row=QHBoxLayout();row.addWidget(QLabel('WORKSPACE'));self.cwd=QLineEdit(self.settings.get('workspace') or os.getcwd());row.addWidget(self.cwd,1);self.edit_controls.append(self.cwd);self.btn(row,'Browse',self.browse,True);self.btn(row,'Profiles',self.profiles,True);v.addLayout(row)
-        row=QHBoxLayout();self.btn(row,'Open file',self.open,True);self.btn(row,'Paste / AI task',self.paste,True);row.addStretch();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run immediately (Ctrl+Enter). Review the script and workspace first. Commands use your account permissions.');v.addLayout(row)
+        row=QHBoxLayout();self.btn(row,'Open file',self.open,True);self.btn(row,'Paste / AI task',self.paste,True);row.addStretch();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run (Ctrl+Enter). Review the script and workspace first; identical task history is checked before execution. Commands use your account permissions.');v.addLayout(row)
         split=QSplitter(Qt.Orientation.Horizontal);self.main_split=split;split.setChildrenCollapsible(False);split.setOpaqueResize(True);split.setHandleWidth(5);v.addWidget(split,1)
         self.tabs=QTabWidget();self.tabs.setMinimumWidth(175);split.addWidget(self.tabs)
         w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(5,5,5,5);l.addWidget(QLabel('LIVE OUTPUT (visible tail)'));self.steps=QListWidget();l.addWidget(self.steps,3);l.addWidget(QLabel('COMMAND OUTLINE'));self.outline=QListWidget();l.addWidget(self.outline,2);self.tabs.addTab(w,'Steps');self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item))
@@ -356,15 +357,33 @@ class App(QMainWindow):
                 'The script matches potentially risky command patterns:\n\n'+labels+'\n\nReview the script and workspace. This is not a safety verdict. Run anyway?',
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
             if answer!=QMessageBox.StandardButton.Yes:return
-        # Import never runs commands. Explicit Run (and high-risk confirmation, if needed) authorizes execution.
+        source=self.source_hash if raw==self.loaded and self.source_hash else 'not applicable (pasted or edited)';taskid=self.task.get('task_id','').replace('\n',' ').replace('\r',' ')
+        metadata_obj=intelligence.run_metadata(cwd,self.task,raw==self.loaded);metadata_obj['inspector']=inspection
+        metadata=json.dumps(metadata_obj,ensure_ascii=True,separators=(',',':'),allow_nan=False)
+        header=self.header(self.source,f'Command SHA256: {sha(raw.encode())}\nSource file SHA256: {source}\nPrepared script SHA256: {sha(script.encode("utf-8-sig"))}\n'+(f'Task ID: {taskid}\n' if taskid else '')+f'Relay metadata: {metadata}\n')
+        if not self.confirm_repeat(comparison.previous_run(REPORTS,header)):return
+        # Import never runs commands. Explicit Run (and confirmations, if needed) authorizes execution.
         try:
             with tempfile.NamedTemporaryFile(suffix='.ps1',delete=False,mode='wb') as f:self.temp=pathlib.Path(f.name);f.write(script.encode('utf-8-sig'))
-            source=self.source_hash if raw==self.loaded and self.source_hash else 'not applicable (pasted or edited)';taskid=self.task.get('task_id','').replace('\n',' ').replace('\r',' ')
-            metadata_obj=intelligence.run_metadata(cwd,self.task,raw==self.loaded);metadata_obj['inspector']=inspection
-            metadata=json.dumps(metadata_obj,ensure_ascii=True,separators=(',',':'),allow_nan=False)
-            self.begin(self.source,self.header(self.source,f'Command SHA256: {sha(raw.encode())}\nSource file SHA256: {source}\nPrepared script SHA256: {sha(script.encode("utf-8-sig"))}\n'+(f'Task ID: {taskid}\n' if taskid else '')+f'Relay metadata: {metadata}\n'))
+            self.begin(self.source,header)
             self.start_process('powershell.exe',['-NoLogo','-NoProfile','-NonInteractive','-File',str(self.temp)])
         except OSError as e:self.error(e);self.cleanup_temp();self.set_busy(False);self.set_status('failed','FAILED / START ERROR')
+    def confirm_repeat(self, previous):
+        status=previous['status']
+        if status in ('not_applicable','no_match'):return True
+        if status=='matched':
+            text='A matching task was previously run in this workspace.\n\nReport: '+previous['report_file']+'\nAssertions / run status: '+previous['verdict']
+            if previous.get('process_exit') is not None:text+='\nProcess exit: '+str(previous['process_exit'])
+        else:text='Previous execution could not be fully checked.'
+        if previous.get('reason'):text+='\n'+previous['reason']
+        text+='\n\nMatching history does not prove the current environment or effects are unchanged. Review before running again.'
+        dialog=QMessageBox(QMessageBox.Icon.Warning,'Review previous execution',text,parent=self)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        run=dialog.addButton('Run anyway',QMessageBox.ButtonRole.AcceptRole)
+        cancel=dialog.addButton(QMessageBox.StandardButton.Cancel)
+        dialog.setDefaultButton(cancel);dialog.setEscapeButton(cancel)
+        dialog.exec()
+        return dialog.clickedButton() is run
     def run_git(self,action):
         if self.running or self.stop_inflight:return
         if self.copy_busy:self.detail.setText('Wait for Copied before starting another run');return

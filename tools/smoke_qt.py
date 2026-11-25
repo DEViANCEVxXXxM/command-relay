@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Non-executing Qt smoke check, intended for an isolated CI checkout."""
 import os
+import json
+import tempfile
 from pathlib import Path
 import sys
 from unittest.mock import patch
@@ -8,7 +10,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
 from command_relay.relay_terms import confirm_usage_terms, disclaimer_text
@@ -49,6 +51,46 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert not window.running
     assert window.editor.toPlainText() == ''
     assert window.runbtn.isEnabled()
+    # Exercise the real pre-run gate without actually executing or journaling a command.
+    with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
+            patch.object(window, 'begin') as begin, patch.object(window, 'start_process') as start:
+        window.cwd.setText(str(root))
+        task = {'schema': 'command-relay/task-v1', 'task_id': 'smoke-repeat',
+                'script': "Write-Output 'COUNT=15'", 'assertions': {'metrics': [{'key': 'COUNT', 'equals': 15}]}}
+        window.import_data(json.dumps(task).encode(), 'smoke.json')
+        window.run()
+        try:
+            assert start.call_count == 1
+            header = begin.call_args.args[1]
+            (Path(tmp) / 'report-20261125-070000-000001.txt').write_text(
+                header + 'COUNT=15\n@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T07:00:01\n', encoding='utf-8')
+        finally:
+            window.cleanup_temp()
+        for accept, expected_calls in [(False, 1), (True, 2)]:
+            errors = []
+            def interact_repeat():
+                dialog = QApplication.activeModalWidget()
+                try:
+                    assert isinstance(dialog, QMessageBox)
+                    assert dialog.windowTitle() == 'Review previous execution'
+                    assert 'PASS' in dialog.text()
+                    assert dialog.defaultButton() is dialog.button(QMessageBox.StandardButton.Cancel)
+                    if accept:
+                        next(b for b in dialog.buttons() if b.text() == 'Run anyway').click()
+                    else:
+                        dialog.defaultButton().click()
+                except Exception as exc:
+                    errors.append(exc)
+                    if dialog is not None:
+                        dialog.reject()
+            QTimer.singleShot(0, interact_repeat)
+            try:
+                window.run()
+                assert not errors, errors
+                assert start.call_count == expected_calls
+            finally:
+                window.cleanup_temp()
+    print('Qt repeated-task confirmation checks passed (cancel and explicit rerun; no commands executed).')
     window.hide()
     window.deleteLater()
     app.processEvents()
