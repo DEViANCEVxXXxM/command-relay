@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Read-only discovery of official stable releases. Not an installer or trust verifier."""
+"""Official release discovery and bounded integrity checks. Not an installer."""
 from dataclasses import dataclass
+import hashlib
+from http.client import HTTPException
 import json
 import re
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .relay_version import VERSION
@@ -12,12 +15,15 @@ REPOSITORY = 'DEViANCEVxXXxM/command-relay'
 LATEST_API = f'https://api.github.com/repos/{REPOSITORY}/releases/latest'
 MAX_RESPONSE = 512 * 1024
 SOCKET_TIMEOUT = 10
+MAX_ARCHIVE = 16 * 1024 * 1024
+MAX_CHECKSUM = 512
+_ASSET_HOSTS = frozenset(('release-assets.githubusercontent.com', 'objects.githubusercontent.com'))
 _VERSION = re.compile(r'(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})\.(?:0|[1-9][0-9]{0,5})')
 _DIGEST = re.compile(r'sha256:[0-9a-f]{64}')
 
 
 class UpdateError(RuntimeError):
-    """Safe discovery error; never exposes raw API response or local environment."""
+    """Safe update error; never exposes raw API response or local environment."""
 
 
 @dataclass(frozen=True)
@@ -128,3 +134,87 @@ def check_latest(current=VERSION):
     except (UnicodeError, ValueError, RecursionError):
         raise UpdateError('Invalid release metadata JSON.') from None
     return parse_latest(data, current)
+
+
+@dataclass(frozen=True)
+class DownloadedUpdate:
+    """Integrity-checked bytes only; not a signature or installation authorization."""
+    info: UpdateInfo
+    archive: bytes
+    sha256: str
+
+
+def _asset_redirect_url(url):
+    try:
+        parts = urlsplit(url)
+        return (parts.scheme == 'https' and parts.netloc in _ASSET_HOSTS
+                and parts.path.startswith('/') and not parts.fragment
+                and not any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url))
+    except (ValueError, TypeError):
+        return False
+
+
+class _AssetRedirect(HTTPRedirectHandler):
+    max_redirections = 3
+    max_repeats = 1
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _asset_redirect_url(newurl):
+            raise UpdateError('Unexpected release asset redirect.')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _validate_download(info):
+    if not isinstance(info, UpdateInfo) or not info.available:
+        raise UpdateError('Expected a newer stable release.')
+    if type(info.release_id) is not int or info.release_id <= 0:
+        raise UpdateError('Invalid release identity.')
+    stem = f'command-relay-v{info.latest}-windows'
+    for asset, name, limit in ((info.archive, stem + '.zip', MAX_ARCHIVE),
+                               (info.checksum, stem + '.sha256', MAX_CHECKSUM)):
+        if (not isinstance(asset, ReleaseAsset) or asset.name != name
+                or type(asset.asset_id) is not int or asset.asset_id <= 0
+                or type(asset.size) is not int or not 0 < asset.size <= limit
+                or not isinstance(asset.digest, str) or not _DIGEST.fullmatch(asset.digest)):
+            raise UpdateError('Invalid or incomplete download metadata.')
+    if info.archive.asset_id == info.checksum.asset_id:
+        raise UpdateError('Duplicate release asset identity.')
+
+
+def _download_asset(info, asset):
+    url = info.release_url.replace('/releases/tag/', '/releases/download/') + '/' + asset.name
+    request = Request(url, headers={'User-Agent': 'Command-Relay/' + info.current,
+                                    'Accept': 'application/octet-stream'}, method='GET')
+    try:
+        with build_opener(_AssetRedirect()).open(request, timeout=SOCKET_TIMEOUT) as response:
+            final = response.geturl()
+            if response.status != 200 or (final != url and not _asset_redirect_url(final)):
+                raise UpdateError('Unexpected release asset response.')
+            # An extra byte detects oversized data without buffering unbounded responses.
+            data = response.read(asset.size + 1)
+    except HTTPError as exc:
+        raise UpdateError(f'Release asset HTTP error ({exc.code}).') from None
+    except (URLError, OSError, EOFError, HTTPException):
+        raise UpdateError('Release asset unavailable.') from None
+    if len(data) != asset.size:
+        raise UpdateError('Release asset size differs from metadata.')
+    if 'sha256:' + hashlib.sha256(data).hexdigest() != asset.digest:
+        raise UpdateError('Release asset digest differs from metadata.')
+    return data
+
+
+def download_update(info):
+    """Explicit, bounded download of a newer release into memory only.
+
+    Check both asset digests and the exact checksum file. No extraction,
+    persistence, execution, or authorization to install. GitHub-originated
+    digests are integrity evidence, not an independent publisher signature.
+    The timeout is per socket operation, not an overall deadline.
+    """
+    _validate_download(info)
+    checksum = _download_asset(info, info.checksum)
+    expected = (info.archive.digest.removeprefix('sha256:') + '  ' + info.archive.name).encode('ascii')
+    if checksum not in (expected + b'\n', expected + b'\r\n'):
+        raise UpdateError('Release checksum file does not match archive metadata.')
+    archive = _download_asset(info, info.archive)
+    return DownloadedUpdate(info, archive, hashlib.sha256(archive).hexdigest())
