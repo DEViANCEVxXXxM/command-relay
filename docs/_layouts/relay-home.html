@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local-first Windows workbench for human-controlled AI-assisted development.">
+  <title>{{ page.title | escape }} | Documentation</title>
+  <style>
+    :root { color-scheme: dark; --bg:#0b111a; --panel:#121d2a; --line:#2a3b4e; --text:#edf4fa; --muted:#a9bdd0; --accent:#71d8f5; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--text); font:16px/1.65 system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    a { color:var(--accent); text-underline-offset:3px; }
+    a:focus-visible { outline:2px solid var(--accent); outline-offset:4px; }
+    .wrap { width:min(100% - 40px,960px); margin-inline:auto; }
+    header { border-bottom:1px solid var(--line); }
+    .nav { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:16px; padding-block:18px; }
+    .brand { display:flex; align-items:center; gap:10px; font-weight:700; color:var(--text); text-decoration:none; }
+    .brand img { width:34px; height:34px; object-fit:contain; }
+    nav { display:flex; flex-wrap:wrap; gap:18px; font-size:14px; }
+    main { padding-block:44px 52px; }
+    h1,h2,h3 { line-height:1.2; letter-spacing:-.025em; }
+    h1 { font-size:clamp(2.4rem,7vw,4.6rem); margin:10px 0 16px; }
+    h2 { font-size:1.55rem; margin:40px 0 14px; }
+    h3 { margin:0 0 8px; font-size:1.08rem; }
+    p { margin:0 0 15px; }
+    .eyebrow { font-size:12px; letter-spacing:.12em; color:var(--accent); font-weight:700; text-transform:uppercase; }
+    .lead { font-size:clamp(1.1rem,3vw,1.35rem); color:var(--muted); max-width:680px; }
+    .actions { display:flex; flex-wrap:wrap; gap:12px; margin:25px 0 32px; }
+    .button { display:inline-block; border:1px solid var(--line); padding:10px 18px; border-radius:8px; text-decoration:none; font-weight:650; }
+    .primary { background:var(--accent); color:var(--bg); border-color:var(--accent); }
+    .warning { border:1px solid #70562e; border-left:4px solid #f1be68; background:#211c15; border-radius:8px; padding:18px 20px; color:#f3e5ce; }
+    .warning p:last-child { margin-bottom:0; }
+    .grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .tile { border:1px solid var(--line); background:var(--panel); border-radius:10px; padding:20px; }
+    .tile p { color:var(--muted); margin:0; }
+    .number { color:var(--accent); font:600 12px/1.5 ui-monospace,monospace; display:block; margin-bottom:10px; }
+    code { font: .9em ui-monospace,monospace; overflow-wrap:anywhere; }
+    pre { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:16px; overflow:auto; }
+    li { margin-bottom:6px; }
+    footer { color:var(--muted); border-top:1px solid var(--line); padding-block:24px; font-size:14px; }
+    @media(max-width:600px) { .wrap { width:calc(100% - 32px); } main { padding-block:28px 40px; } .grid { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <header><div class="wrap nav">
+    <a class="brand" href="{{ '/' | relative_url }}"><img src="{{ '/assets/relay-icon.png' | relative_url }}" alt="" width="34" height="34">Command Relay</a>
+    <nav aria-label="Main navigation"><a href="{{ site.github.repository_url }}">GitHub</a><a href="{{ site.github.repository_url }}/releases">Releases</a><a href="{{ site.github.repository_url }}/blob/main/SECURITY.md">Security</a></nav>
+  </div></header>
+  <main class="wrap" id="main">{{ content }}</main>
+  <footer><div class="wrap">Command Relay &middot; <a href="{{ site.github.repository_url }}/blob/main/LICENSE">Apache 2.0</a> &middot; <a href="{{ site.github.repository_url }}/blob/main/NOTICE">Attribution</a> &middot; <a href="{{ '/disclaimer.html' | relative_url }}">Disclaimer</a></div></footer>
+</body>
+</html>

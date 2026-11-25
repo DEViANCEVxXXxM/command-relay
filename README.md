@@ -1,7 +1,13 @@
 <p align="center"><img src="command_relay/assets/relay-icon.png" alt="Command Relay icon" width="88"></p>
 <h1 align="center">Command Relay</h1>
-<p align="center">A local Windows workbench for human-controlled AI-assisted development.</p>
-<p align="center"><a href="CHANGELOG.md">Changelog</a> · <a href="docs/COMMAND_RELAY_AI_GUIDE.md">AI operating guide</a> · <a href="docs/manual.txt">Full manual</a> · <a href="SECURITY.md">Security</a></p>
+<p align="center">A local-first Windows workbench for human-controlled AI-assisted development.</p>
+<p align="center">
+  <a href="https://github.com/DEViANCEVxXXxM/command-relay/actions/workflows/ci.yml"><img src="https://github.com/DEViANCEVxXXxM/command-relay/actions/workflows/ci.yml/badge.svg?branch=main&amp;event=push" alt="CI"></a>
+  <a href="https://github.com/DEViANCEVxXXxM/command-relay/actions/workflows/codeql.yml"><img src="https://github.com/DEViANCEVxXXxM/command-relay/actions/workflows/codeql.yml/badge.svg?branch=main&amp;event=push" alt="CodeQL"></a>
+  <a href="https://github.com/DEViANCEVxXXxM/command-relay/releases"><img src="https://img.shields.io/github/v/release/DEViANCEVxXXxM/command-relay" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache 2.0"></a>
+</p>
+<p align="center"><a href="https://deviancevxxxxm.github.io/command-relay/">Documentation</a> &middot; <a href="https://github.com/DEViANCEVxXXxM/command-relay/releases">Releases</a> &middot; <a href="CHANGELOG.md">Changelog</a> · <a href="docs/COMMAND_RELAY_AI_GUIDE.md">AI operating guide</a> · <a href="docs/manual.txt">Full manual</a> · <a href="SECURITY.md">Security</a></p>
 
 > [!WARNING]
 > **Run code at your own risk.** Command Relay is not a sandbox. The maintainers and contributors do not guarantee or accept responsibility for AI-generated or other third-party scripts, executables or code run through the application, to the extent permitted by law. Read the [full disclaimer and acknowledgement](DISCLAIMER.md) before use.
@@ -20,8 +26,8 @@ Command Relay bridges an AI chat and a local development workspace without grant
 
 ## Quick start
 
-1. Download the portable Windows ZIP from the repository's **Releases** tab, or clone the repository.
-2. Extract into a new writable folder. Install Python 3.10–3.13 (64-bit recommended), PowerShell and optionally Git for Git features.
+1. Download the portable Windows ZIP from [Releases](https://github.com/DEViANCEVxXXxM/command-relay/releases), or clone the repository if a release is not yet available.
+2. Extract into a new writable folder. Install Python 3.10–3.14 (64-bit recommended), PowerShell and optionally Git for Git features.
 3. In that folder, install the GUI dependency:
 
    ```powershell
@@ -31,7 +37,16 @@ Command Relay bridges an AI chat and a local development workspace without grant
 4. Open `Start.pyw` (or `Start.cmd`); use `tools/Start-Debug.cmd` if startup fails. Read the startup disclaimer and explicitly agree to continue. Declining or closing the dialog exits without opening the workbench.
 5. Choose your workspace, import [`examples/example-ai-task.json`](examples/example-ai-task.json), review it, click **Run commands**, then **Copy**. The fictional smoke task should report PASS.
 
-The portable ZIP includes Python source and launchers, not Python itself or a compiled executable. Windows is the supported application target; Linux CI covers platform-independent logic only.
+The portable ZIP includes Python source and launchers, not Python itself or a compiled executable. Windows is the supported application target; Linux CI covers platform-independent logic only. CI tests Python 3.10, 3.12, 3.13 and 3.14 on Windows and Linux, with Windows Qt smoke checks on Python 3.12 and 3.14. Python 3.11 is not currently included in the CI matrix.
+
+## How the workflow fits together
+
+| Step | You control | Command Relay provides |
+| --- | --- | --- |
+| Import | Which task enters the editor | Structured JSON or a PowerShell script |
+| Review | Workspace, commands and risks | Editable script and heuristic warnings |
+| Run | When execution starts or stops | Local execution and live output |
+| Copy | What evidence is shared | Structured results and best-effort protected exports |
 
 ## Work with an AI chat
 
