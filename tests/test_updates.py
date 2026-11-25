@@ -1686,3 +1686,161 @@ class HandoffPreparationTests(unittest.TestCase):
                 self.prepare()
         self.assertEqual(len(self.bundles()), 1)
         self.assertEqual((self.root / 'Start.pyw').read_bytes(), self.f.files['Start.pyw'])
+
+
+class HandoffLaunchTests(unittest.TestCase):
+    def setUp(self):
+        self.f = HandoffPreparationTests()
+        self.f.setUp()
+        self.addCleanup(self.f.doCleanups)
+        self.root = self.f.root
+        self.handoff = self.f.prepare()
+
+    def launch(self, action='inspect'):
+        return u.launch_prepared_updater(self.handoff, action=action)
+
+    def test_launch_fixed_isolated_arguments_after_unlock(self):
+        def spawn(argv, **kwargs):
+            with u.installation_lock(self.root):
+                self.assertEqual(argv[1:4], ['-I', '-B', '-c'])
+                self.assertEqual(argv[5], str(self.handoff.updater_root))
+                self.assertEqual(argv[6:], ['--inspect', '--root', str(self.root),
+                    '--original', str(self.handoff.original_folder), '--target',
+                    str(self.handoff.target_folder), '--target-version', '4.10.0'])
+                self.assertFalse(kwargs['shell'])
+                self.assertTrue(kwargs['close_fds'])
+                self.assertEqual(kwargs['cwd'], str(self.handoff.updater_root))
+            return 'child'
+        with patch('subprocess.Popen', side_effect=spawn) as launch:
+            self.assertEqual(self.launch(), 'child')
+        launch.assert_called_once()
+        self.assertFalse((self.root / u.UPDATE_TRANSACTION_NAME).exists())
+
+    def test_modified_code_and_extra_import_denied(self):
+        with patch('subprocess.Popen') as launch:
+            extra = self.handoff.updater_root / 'command_relay' / '__pycache__'
+            extra.mkdir()
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+            extra.rmdir()
+            (self.handoff.updater_root / 'Start.pyw').write_bytes(b'modified')
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+        launch.assert_not_called()
+
+    def test_package_tampering_and_substitution_denied(self):
+        from dataclasses import replace
+        with patch('subprocess.Popen') as launch:
+            saved = self.handoff
+            self.handoff = replace(saved, target_sha256='0'*64)
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+            self.handoff = saved
+            next(saved.target_folder.glob('*.sig')).write_bytes(b'x'*64)
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+        launch.assert_not_called()
+
+    def test_busy_pending_and_permission_denied(self):
+        with patch('subprocess.Popen') as launch:
+            with u.installation_lock(self.root), self.assertRaises(u.UpdateError):
+                self.launch()
+            with self.assertRaises(u.UpdateError):
+                self.launch('install')
+            (self.root / u.UPDATE_TRANSACTION_NAME).mkdir()
+            with self.assertRaises(u.RecoveryRequired):
+                self.launch()
+            with self.assertRaises(u.UpdateError):
+                self.launch('recover')
+        launch.assert_not_called()
+
+    def test_wrong_directory_or_interpreter_denied(self):
+        from dataclasses import replace
+        import sys
+        with patch('subprocess.Popen') as launch:
+            saved = self.handoff
+            self.handoff = replace(saved, updater_root=self.root)
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+            self.handoff = saved
+            with patch.object(sys, 'executable', str(self.root / 'Start.pyw')):
+                with self.assertRaises(u.UpdateError):
+                    self.launch()
+            with self.assertRaises(u.UpdateError):
+                self.launch('unexpected')
+        launch.assert_not_called()
+
+    def test_spawn_failure_preserves_bundle_and_destination(self):
+        before = self.f.snapshot()
+        with patch('subprocess.Popen', side_effect=OSError('failed')):
+            with self.assertRaises(u.UpdateError):
+                self.launch()
+        self.assertEqual(self.f.snapshot(), before)
+        self.assertTrue(self.handoff.directory.is_dir())
+        with u.installation_lock(self.root):
+            pass
+
+    def test_real_isolated_child_inspects_signed_code(self):
+        from pathlib import Path
+        import subprocess
+        import os
+        # Only an ephemeral key is embedded in this disposable, signed copy.
+        fixture = self.f.f
+        source = Path(u.__file__).resolve().parent.parent
+        files = {name: (source/name).read_bytes() for name in u.INSTALL_PROGRAM_FILES}
+        name = 'command_relay/relay_updates.py'
+        files[name] = files[name].replace(
+            b'835cafd70177a9c97c426d1f05b522650d05a16c302380654372da4d0c07389b',
+            fixture.key.public_key().public_bytes_raw().hex().encode('ascii'))
+        for name, data in files.items():
+            (self.root/name).write_bytes(data)
+        fixture.old = fixture.package('4.1.0', u.VERSION, files)
+        fixture.new = fixture.package(u.VERSION, '4.10.0', dict(files, **{'Start.pyw': b'new launcher'}))
+        self.handoff = self.f.prepare()
+        before = self.f.snapshot()
+        spawn = subprocess.Popen
+        def capture(argv, **kwargs):
+            return spawn(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+        with patch('subprocess.Popen', side_effect=capture), patch.dict(os.environ, {'PYTHONPATH': str(self.root)}):
+            process = self.launch()
+            try:
+                out, err = process.communicate(timeout=30)
+            except BaseException:
+                process.kill(); process.communicate(); raise
+        self.assertEqual(process.returncode, 0, err.decode(errors='replace'))
+        result = json.loads(out)
+        self.assertEqual(result['replace'], ['Start.pyw'])
+        self.assertFalse(result['installation_authorized'])
+        self.assertEqual(self.f.snapshot(), before)
+        self.assertFalse(list(self.handoff.updater_root.rglob('__pycache__')))
+
+    def test_install_launch_requires_grant_and_keeps_child_confirmation(self):
+        import sys
+        import os
+        import subprocess
+        from command_relay.relay_permissions import with_permission
+        (self.root / 'automation-permissions.json').write_text(json.dumps(
+            with_permission({}, 'update_install', enabled=True)), encoding='utf-8')
+        before = self.f.snapshot()
+        with patch.object(sys.stdin, 'isatty', return_value=True), \
+                patch.object(sys.stderr, 'isatty', return_value=True), \
+                patch('subprocess.Popen') as launch:
+            self.launch('install')
+        args, kwargs = launch.call_args
+        self.assertEqual(args[0][6], '--install')
+        self.assertNotIn('INSTALL 4.10.0', args[0])
+        self.assertEqual(kwargs['creationflags'], subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0)
+        self.assertEqual(self.f.snapshot(), before)
+        self.assertFalse((self.root / u.UPDATE_TRANSACTION_NAME).exists())
+
+    def test_recovery_launch_requires_matching_intent_not_grant(self):
+        import sys
+        u._apply_pending_update(self.root, self.f.f.old, self.f.f.new)
+        before = self.f.snapshot()
+        with patch.object(sys.stdin, 'isatty', return_value=True), \
+                patch.object(sys.stderr, 'isatty', return_value=True), \
+                patch('subprocess.Popen') as launch:
+            self.launch('recover')
+        self.assertEqual(launch.call_args.args[0][6], '--recover')
+        self.assertEqual(self.f.snapshot(), before)
+        self.assertTrue((self.root / u.UPDATE_TRANSACTION_NAME).is_dir())
