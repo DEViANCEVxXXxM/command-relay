@@ -192,3 +192,47 @@ class StartupRecoveryGateTests(unittest.TestCase):
                 pass
             self.assertTrue(marker.is_dir())
             self.assertFalse((root / UPDATE_LOCK_NAME).exists())
+
+
+class GuiHandoffLifecycleTests(unittest.TestCase):
+    def test_launch_after_gui_releases_lock(self):
+        from command_relay import __main__ as launcher
+        from command_relay import relay_updates as u
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            bundle = root.parent / 'unused-test-bundle'
+            handoff = u.PreparedUpdateHandoff(bundle, bundle/'updater', bundle/'original', bundle/'target',
+                u.InstallPlan(root, u.VERSION, '9.0.0', (), ()), 'a'*64, 'b'*64)
+            def gui():
+                with self.assertRaises(u.UpdateError), u.installation_lock(root):
+                    pass
+                return handoff
+            def spawn(request, *, action):
+                self.assertIs(request, handoff)
+                self.assertEqual(action, 'install')
+                with u.installation_lock(root):
+                    pass
+            with patch.object(launcher, 'ROOT', root), patch.object(launcher, 'launch_prepared_updater', side_effect=spawn) as launch:
+                self.assertEqual(launcher.main(gui), 0)
+                launch.assert_called_once()
+                launch.reset_mock()
+                self.assertEqual(launcher.main(lambda: 7), 7)
+                launch.assert_not_called()
+
+    def test_failed_launch_reports_and_does_not_retry(self):
+        from command_relay import __main__ as launcher
+        from command_relay import relay_updates as u
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            handoff = u.PreparedUpdateHandoff(root, root, root, root,
+                u.InstallPlan(root, u.VERSION, '9.0.0', (), ()), 'a'*64, 'b'*64)
+            notify = Mock()
+            with patch.object(launcher, 'ROOT', root), patch.object(launcher, 'launch_prepared_updater', side_effect=u.UpdateError('failed')) as launch:
+                self.assertEqual(launcher.main(lambda: handoff, notify), 1)
+                launch.assert_called_once()
+                notify.assert_called_once()
+                launch.reset_mock()
+                other = replace(handoff, plan=replace(handoff.plan, root=root.parent))
+                self.assertEqual(launcher.main(lambda: other, notify), 1)
+                launch.assert_not_called()

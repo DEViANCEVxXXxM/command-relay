@@ -5,12 +5,12 @@ import json
 import tempfile
 from pathlib import Path
 import sys
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QTimer, Qt, QPoint, QCoreApplication, QEvent
-from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox
+from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox, QFileDialog
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
 from command_relay.relay_terms import confirm_usage_terms, disclaimer_text
@@ -100,9 +100,9 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
                        for i, ext in enumerate(('.zip', '.sha256', '.manifest.json', '.manifest.sig'), 2)]}
     info = updates.parse_latest(data, VERSION)
     unsigned = updates.parse_latest(dict(data, assets=data['assets'][:2]), VERSION)
+    signed = Mock(); signed.download.sha256 = 'a'*64
     with patch.object(updates, 'check_latest', side_effect=[info, info, unsigned, updates.UpdateError('mock failure')]) as check, \
-            patch.object(updates, 'verify_release_for_display', side_effect=[updates.UpdateError('bad signature'), 'a'*64]) as verify, \
-            patch.object(updates, 'download_signed_update') as download:
+            patch.object(updates, 'download_signed_update', side_effect=[updates.UpdateError('bad signature'), signed]) as verify:
         dialog = relay_qt.UpdatesDialog(window)
         dialog.show(); app.processEvents()
         check.assert_not_called(); verify.assert_not_called()
@@ -123,9 +123,18 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         dialog.verify_button.click(); wait_updates()
         assert dialog.trust.text() == 'Publisher signature: Verified'
         assert 'a'*64 in dialog.digest.text() and not dialog.verify_button.isEnabled()
-        assert 'discarded' in dialog.status.text()
+        assert 'retained' in dialog.status.text() and dialog.signed is signed
+        assert not dialog.prepare_button.isEnabled()  # no guarded portable GUI in smoke
+        with patch.object(updates, 'gui_handoff_available', return_value=True), \
+                patch.object(QFileDialog, 'getExistingDirectory', return_value=str(root)), \
+                patch.object(QMessageBox, 'question', side_effect=[QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes]), \
+                patch.object(updates, 'prepare_gui_update_handoff', side_effect=updates.UpdateError('mock denied')) as prepare:
+            dialog.prepare_installation(); prepare.assert_not_called()
+            dialog.prepare_installation(); prepare.assert_called_once_with(root, root, signed)
+            assert 'mock denied' in dialog.status.text() and dialog.handoff is None
+            assert dialog.signed is signed
         dialog.check_button.click(); wait_updates()
-        assert 'NOT verified' in dialog.trust.text() and not dialog.digest.text()
+        assert 'NOT verified' in dialog.trust.text() and not dialog.digest.text() and dialog.signed is None
         dialog.check_button.click(); wait_updates()
         assert not dialog.verify_button.isEnabled() and 'missing' in dialog.trust.text()
         dialog.verify(); assert verify.call_count == 2
@@ -134,9 +143,20 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert not dialog.verify_button.isEnabled()
         assert check.call_count == 4 and verify.call_count == 2
         assert all(call.args == (info,) for call in verify.call_args_list)
-        download.assert_not_called()
         dialog.reject(); dialog.deleteLater(); app.processEvents()
-    print('Qt updates settings checks passed (explicit metadata lookup, verification success/failure, stale state reset, unsigned denial; mocked network).')
+    # Separate accepted preparation; no real download, disk writes or process.
+    dialog = relay_qt.UpdatesDialog(window)
+    dialog.signed = signed
+    prepared = object()
+    with patch.object(updates, 'gui_handoff_available', return_value=True), \
+            patch.object(QFileDialog, 'getExistingDirectory', return_value=str(root)), \
+            patch.object(QMessageBox, 'question', return_value=QMessageBox.StandardButton.Yes), \
+            patch.object(updates, 'prepare_gui_update_handoff', return_value=prepared):
+        dialog.prepare_installation()
+        assert dialog.result() == QDialog.DialogCode.Accepted and dialog.handoff is prepared
+        assert dialog.signed is None
+    dialog.deleteLater(); app.processEvents()
+    print('Qt updates settings checks passed (explicit metadata lookup, verification success/failure, stale state reset, unsigned denial, prepare cancel/deny/accept; mocked network and preparation).')
     # Reproduce audit 041: long labels, compact window, both layout directions.
     original_size = window.size()
     original_direction = window.layoutDirection()

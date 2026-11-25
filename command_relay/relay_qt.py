@@ -123,19 +123,21 @@ class WorkerSignals(QObject):
     historyDone=Signal(object,object,object)
 
 class UpdatesDialog(QDialog):
-    """Explicit metadata lookup and in-memory verification; no installation."""
+    """Explicit lookup, verification and optional guarded exit handoff."""
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Updates'); self.resize(560, 300)
         self.results = None
         self.info = None
+        self.signed = None
+        self.handoff = None
         layout = QVBoxLayout(self)
         def label(text):
             item = QLabel(text); item.setWordWrap(True)
             item.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(item)
             return item
         label('Current version: ' + VERSION)
-        label('Check official GitHub release metadata or verify a newer package in memory. Nothing is installed.')
+        label('Check official GitHub releases, verify a package, or prepare an external updater. Nothing is installed in this dialog.')
         self.latest = label('Latest stable release: Not checked')
         self.status = label('Select Check for updates to start.')
         self.trust = label('Publisher signature: Not verified')
@@ -149,12 +151,17 @@ class UpdatesDialog(QDialog):
         self.verify_button.clicked.connect(self.verify); row.addWidget(self.verify_button)
         row.addStretch()
         close = QPushButton('Close'); close.setAutoDefault(False); close.clicked.connect(self.reject); row.addWidget(close)
+        self.prepare_button = QPushButton('Prepare installation…')
+        self.prepare_button.setObjectName('updates_prepare')
+        self.prepare_button.setAutoDefault(False); self.prepare_button.setEnabled(False)
+        self.prepare_button.clicked.connect(self.prepare_installation)
+        layout.addWidget(self.prepare_button)
         self.poll = QTimer(self); self.poll.setInterval(50); self.poll.timeout.connect(self.finish_check)
 
     def _start(self, work, failure):
         results = queue.Queue(maxsize=1)
         self.results = results
-        self.check_button.setEnabled(False); self.verify_button.setEnabled(False)
+        self.check_button.setEnabled(False); self.verify_button.setEnabled(False); self.prepare_button.setEnabled(False)
         # Worker owns only a queue and captured plain Python data, not Qt objects.
         def run():
             try: results.put(work())
@@ -169,6 +176,7 @@ class UpdatesDialog(QDialog):
         if self.results is not None: return
         from . import relay_updates as updates
         self.info = None
+        self.signed = None
         self.digest.clear()
         self.latest.setText('Latest stable release: Checking…')
         self.status.setText('Requesting official release metadata…')
@@ -176,38 +184,66 @@ class UpdatesDialog(QDialog):
         def work():
             info = updates.check_latest(VERSION)
             availability, trust = updates.describe_release(info)
-            return ('check', info, availability, trust, '')
-        self._start(work, ('check', None, 'Release check failed. Retry later.', 'Publisher signature: Not verified', ''))
+            return ('check', info, availability, trust, None)
+        self._start(work, ('check', None, 'Release check failed. Retry later.', 'Publisher signature: Not verified', None))
 
     def verify(self):
         from . import relay_updates as updates
         if self.results is not None or not updates.can_verify_release(self.info): return
         info = self.info
+        self.signed = None
         self.digest.clear()
         self.status.setText('Downloading and verifying signed package…')
         self.trust.setText('Publisher signature: Not verified')
         def work():
-            digest = updates.verify_release_for_display(info)
-            return ('verify', info, 'Package verified in memory and discarded. No installation performed.',
-                    'Publisher signature: Verified', digest)
+            signed = updates.download_signed_update(info)
+            return ('verify', info, 'Package verified and retained in memory until this dialog closes. No installation performed.',
+                    'Publisher signature: Verified', signed)
         self._start(work, ('verify', info, 'Package verification failed. Retry or check again.',
-                           'Publisher signature: Not verified', ''))
+                           'Publisher signature: Not verified', None))
 
     def finish_check(self):
         if self.results is None: return
-        try: mode, info, status, trust, digest = self.results.get_nowait()
+        try: mode, info, status, trust, signed = self.results.get_nowait()
         except queue.Empty: return
         self.poll.stop(); self.results = None
         from . import relay_updates as updates
         self.info = info
+        self.signed = signed
+        digest = signed.download.sha256 if signed is not None else None
         self.latest.setText('Latest stable release: ' + (info.latest if info else 'Unavailable'))
         self.status.setText(status); self.trust.setText(trust)
         self.digest.setText('Verified archive SHA-256: ' + digest if digest else '')
         self.check_button.setEnabled(True)
         self.verify_button.setEnabled(not digest and updates.can_verify_release(info))
+        self.prepare_button.setEnabled(signed is not None and updates.gui_handoff_available(ROOT))
+
+    def prepare_installation(self):
+        from . import relay_updates as updates
+        if self.results is not None or self.signed is None or not updates.gui_handoff_available(ROOT):
+            return
+        folder = QFileDialog.getExistingDirectory(self, 'Select the original signed release package folder')
+        if not folder:
+            return
+        answer = QMessageBox.question(self, 'Prepare installation',
+            'Prepare the external updater and close Command Relay? Save or copy any unsaved editor content first. '
+            'The current signed release package and an installation permission are required. '
+            'The external terminal will ask separately before replacing files.',
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self.handoff = updates.prepare_gui_update_handoff(ROOT, pathlib.Path(folder), self.signed)
+        except (updates.UpdateError, OSError) as exc:
+            # UpdateError messages are bounded; do not expose raw OS details.
+            self.status.setText(str(exc) if isinstance(exc, updates.UpdateError) else 'Unable to prepare updater. Preserve any partial bundle.')
+            return
+        self.accept()
 
     def done(self, result):
-        self.poll.stop(); self.results = None; self.info = None
+        self.poll.stop(); self.results = None; self.info = None; self.signed = None
+        if result != QDialog.DialogCode.Accepted: self.handoff = None
+        self.prepare_button.setEnabled(False)
         self.digest.clear(); self.trust.setText('Publisher signature: Not verified')
         self.verify_button.setEnabled(False)
         super().done(result)
@@ -411,6 +447,7 @@ def action_group():
 class App(QMainWindow):
     def __init__(self):
         super().__init__();self.setWindowTitle(f'Command Relay {VERSION} — Qt Workbench');self.resize(1180,740);self.setMinimumSize(850,560)
+        self.update_handoff = None
         self.settings=read_settings();self.running=False;self.cancelled=False;self.proc=None;self.temp=None;self.journal=None;self.active=None;self.current=None;self.source='Untitled';self.source_hash=None;self.loaded=None;self.task={};self.pending=[];self.blank=False;self.started=0;self.stop_pending=False;self.stop_inflight=False
         self.signals=WorkerSignals();self.signals.hashDone.connect(self.hash_done);self.signals.stopDone.connect(self.stop_done);self.signals.initialTail.connect(self.finish_initial_tail);self.initial_restore_pending=True;self.tool_busy=False;self.task_queue=[];self.signals.toolDone.connect(self.tool_done);self.copy_busy=False;self.signals.copyDone.connect(self.copy_done);self.warm_path=None;self.warm_result=None;self.warm_waiting=False;self.signals.warmDone.connect(self.warm_done)
         self.edit_controls=[];self.lib=pathlib.Path(self.settings.get('library') or ROOT/'scripts');
@@ -934,8 +971,14 @@ class App(QMainWindow):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
             return self.error('Finish the active operation first')
         dialog = UpdatesDialog(self)
-        dialog.exec()
+        result = dialog.exec()
+        handoff = dialog.handoff if result == QDialog.DialogCode.Accepted else None
         dialog.deleteLater()
+        if handoff is not None:
+            self.update_handoff = handoff
+            if not self.close():
+                self.update_handoff = None
+                self.error('Updater prepared but application did not close. Preserve the external bundle.')
 
     def github_prs(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
@@ -1083,7 +1126,8 @@ def main():
     startup_mark('terms_accepted_ms')
     w=App()
     if not icon.isNull():w.setWindowIcon(icon)
-    startup_mark('widgets_created_ms');w.show();startup_mark('show_called_ms');return app.exec()
+    startup_mark('widgets_created_ms');w.show();startup_mark('show_called_ms');code = app.exec()
+    return w.update_handoff if code == 0 and w.update_handoff is not None else code
 
 
 if __name__ == "__main__":

@@ -1844,3 +1844,33 @@ class HandoffLaunchTests(unittest.TestCase):
         self.assertEqual(launch.call_args.args[0][6], '--recover')
         self.assertEqual(self.f.snapshot(), before)
         self.assertTrue((self.root / u.UPDATE_TRANSACTION_NAME).is_dir())
+
+
+class GuiHandoffPreparationTests(unittest.TestCase):
+    def test_guarded_preparation_reuses_lock_and_requires_permission(self):
+        from command_relay.relay_permissions import with_permission
+        fixture = HandoffPreparationTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        root = fixture.root
+        package = fixture.prepare()
+        target = fixture.f.new
+        # Exercise the guard and real preparation on both CI platforms; only
+        # the platform restriction is adapted for this Linux test harness.
+        with patch.object(u, 'gui_handoff_available', side_effect=lambda p: u._gui_installation.get() == p):
+            with self.assertRaises(u.UpdateError):
+                u.prepare_gui_update_handoff(root, package.original_folder, target)
+            with u.startup_installation_guard(root):
+                with self.assertRaises(u.UpdateError):
+                    u.prepare_gui_update_handoff(root, package.original_folder, target)
+                (root/'automation-permissions.json').write_text(json.dumps(
+                    with_permission({}, 'update_install', enabled=True)), encoding='utf-8')
+                before = fixture.snapshot()
+                prepared = u.prepare_gui_update_handoff(root, package.original_folder, target)
+                self.assertEqual(prepared.plan, package.plan)
+                self.assertEqual(fixture.snapshot(), before)
+                with self.assertRaises(u.UpdateError), u.installation_lock(root):
+                    pass
+            self.assertIsNone(u._gui_installation.get())
+            with self.assertRaises(u.UpdateError):
+                u.prepare_gui_update_handoff(root, package.original_folder, target)

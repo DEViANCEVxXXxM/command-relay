@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Official release discovery, authenticity checks and isolated staging. Not an installer."""
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
@@ -947,6 +948,9 @@ def installation_lock(root):
             os.close(fd)
 
 
+_gui_installation = ContextVar("gui_installation", default=None)
+
+
 @contextmanager
 def startup_installation_guard(root):
     """Guard supported portable launchers; leave source checkouts usable.
@@ -973,7 +977,11 @@ def startup_installation_guard(root):
     else:
         with installation_lock(root):
             _require_no_pending_transaction(root)
-            yield
+            token = _gui_installation.set(root)
+            try:
+                yield
+            finally:
+                _gui_installation.reset(token)
 
 
 def load_local_signed_package(folder, version, *, current):
@@ -1260,6 +1268,28 @@ def _prepare_update_handoff_locked(root, original, target):
                                      original.download.sha256, target.download.sha256)
     except OSError:
         raise UpdateError('Unable to prepare external handoff; preserve any partial bundle.') from None
+
+
+def gui_handoff_available(root):
+    """Only the guarded portable GUI on Windows can request a handoff."""
+    import os
+    return os.name == 'nt' and _gui_installation.get() == Path(root)
+
+
+def prepare_gui_update_handoff(root, original_folder, target):
+    """Called on the guarded GUI thread; no recursive installation lock.
+
+    Retained target bytes are reauthenticated by preparation. The original
+    package must be supplied separately; neither a source checkout nor an
+    unguarded Qt entry point can prepare an installation handoff.
+    """
+    root = Path(root)
+    if not gui_handoff_available(root):
+        raise UpdateError('Portable Windows application startup guard required.')
+    _require_no_pending_transaction(root)
+    _require_install_permission(root)
+    original = load_local_signed_package(original_folder, VERSION, current='0.0.0')
+    return _prepare_update_handoff_locked(root, original, target)
 
 
 def _verify_handoff_launch_locked(handoff, *, action):
