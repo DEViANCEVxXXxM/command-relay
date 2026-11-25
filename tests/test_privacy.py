@@ -53,6 +53,47 @@ class PrivacyTests(unittest.TestCase):
     def test_quoted_values(self):
         text='{"password":"fictional secret with spaces"}\nPASSWORD=\'fictional other value\'\n'
         out,n=protect_text(text);self.assertNotIn('fictional',out);self.assertEqual(json.loads(out.splitlines()[0])['password'],MASK)
+    def test_workflow_reference_standalone(self):
+        for line in ('    GH_TOKEN: ${{ github.token }}',
+                     'API_KEY: "${{ secrets.EXAMPLE_KEY }}"',
+                     "PASSWORD: '${{secrets.EXAMPLE_PASSWORD}}'", 'token: ${{github.token}}'):
+            for ending in ('', '\n', '\r\n'):
+                raw=line+ending
+                self.assertEqual(protect_text(raw), (raw, 0))
+                out=protect_packet({'output':raw},raw)
+                self.assertEqual(out['output'],raw)
+                self.assertEqual(out['privacy']['status'],'no_matches')
+    def test_workflow_reference_does_not_exempt_mixed_values(self):
+        for value in ('"${{ github.token }} literal-fixture-secret"',
+                      '"${{ secrets.EXAMPLE || \x27literal-fixture-secret\x27 }}"',
+                      '"literal-fixture-secret ${{ github.token }}"'):
+            raw='GH_TOKEN: '+value
+            out,n=protect_text(raw)
+            self.assertNotIn('literal-fixture-secret',out)
+            self.assertGreater(n,0)
+        for raw in ('GH_TOKEN: ${{ github.token }} # comment',
+                    'GH_TOKEN: ${{ github.token }}extra', 'TOKEN=${{ github.token }}',
+                    'GH_TOKEN: ${{ vars.EXAMPLE }}'):
+            self.assertGreater(protect_text(raw)[1],0)
+    def test_workflow_reference_other_masking_rules_remain_active(self):
+        token='ghp_'+'X'*36
+        raw='GH_TOKEN: ${{ secrets.'+token+' }}\nAuthorization: ${{ github.token }}\n'
+        out,n=protect_text(raw)
+        self.assertNotIn(token,out)
+        self.assertIn('Authorization: '+MASK,out)
+        self.assertGreaterEqual(n,2)
+    def test_workflow_reference_real_assignment_and_alias(self):
+        secret='fixture-real-value-123'
+        reference='GH_TOKEN: ${{ github.token }}'
+        source=reference+'\nGH_TOKEN: '+secret+'\n'
+        out=protect_packet({'output':reference+'\nCopied '+secret},source)
+        self.assertIn(reference,out['output'])
+        self.assertNotIn(secret,out['output'])
+    def test_workflow_reference_structured_secret_not_exempt(self):
+        reference='${{ github.token }}'
+        out=protect_packet({'token':reference,'checks':[{'key':'API_KEY','last':reference}]})
+        self.assertEqual(out['token'],MASK)
+        self.assertEqual(out['checks'][0]['last'],MASK)
     def test_already_masked(self):
         self.assertEqual(protect_text('PASSWORD=[REDACTED]')[0],'PASSWORD=[REDACTED]')
     def test_no_value_disclosure_in_warning(self):

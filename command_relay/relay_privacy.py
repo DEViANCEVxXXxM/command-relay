@@ -15,6 +15,13 @@ URL = re.compile(r'(?i)\b[a-z][a-z0-9+.-]{1,15}://(?P<value>[^\s/@<>"\']+:[^\s/@
 PEM = re.compile(r'-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)')
 # Quoted JSON inside log strings and assignment values are handled before serialization.
 PATTERNS = (PEM, HEADER, TOKEN, URL, ASSIGN)
+# Only complete, standalone YAML-style assignments to literal workflow references
+# are exempt from ASSIGN. Headers, token shapes, aliases and structured secret
+# fields still use their original masking rules. No evaluation of expressions.
+WORKFLOW_REF = re.compile(
+    r'(?m)^[ \t]*(?i:'+SECRET_NAME+r')[ \t]*:[ \t]*(?P<value>(?P<quote>["\']?)'
+    r'\$\{\{[ \t]*(?:github\.token|secrets\.[A-Za-z_][A-Za-z0-9_]{0,127})'
+    r'[ \t]*\}\}(?P=quote))[ \t]*\r?$')
 MAX_SOURCE = 8_000_000
 MAX_ALIASES = 128
 
@@ -36,6 +43,15 @@ def meaningful(v):
     return bool(v.strip()) and v.strip().lower() not in ('[redacted]','[redacted','<redacted>','***','[masked]')
 
 
+def masking_matches(text):
+    reference_starts = {m.start('value') for m in WORKFLOW_REF.finditer(text)}
+    for pattern in PATTERNS:
+        for m in pattern.finditer(text):
+            if pattern is ASSIGN and m.start('value') in reference_starts:
+                continue
+            yield m
+
+
 class Masker:
     def __init__(self,source=''):
         self.aliases=set();self.alias_limit_reached=False;self.replacements=0;self.source_limited=len(source)>MAX_SOURCE
@@ -51,9 +67,8 @@ class Masker:
             if escaped!=v and len(self.aliases)<MAX_ALIASES:self.aliases.add(escaped)
 
     def collect(self,text):
-        for pattern in PATTERNS:
-            for m in pattern.finditer(text):
-                a,b=value_span(m);self.remember(text[a:b])
+        for m in masking_matches(text):
+            a,b=value_span(m);self.remember(text[a:b])
 
     def collect_object(self,obj,sensitive=False):
         if isinstance(obj,dict):
@@ -72,10 +87,9 @@ class Masker:
     def text(self,text):
         # Merge overlapping matches so a header or PEM never leaves a partial value.
         spans=[]
-        for pattern in PATTERNS:
-            for m in pattern.finditer(text):
-                a,b=value_span(m)
-                if meaningful(text[a:b]):spans.append((a,b))
+        for m in masking_matches(text):
+            a,b=value_span(m)
+            if meaningful(text[a:b]):spans.append((a,b))
         if self.alias_re:
             spans.extend(m.span() for m in self.alias_re.finditer(text))
         if not spans:return text
