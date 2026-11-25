@@ -24,12 +24,20 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Local report archives and evidence ZIP exports; best-effort secret masking in protected exports.
 - No mandatory API key, account, telemetry or cloud connection. Commands may access the network if you explicitly run such commands.
 
-## What's new in 4.2.0 — Safety & Control Center
+## What's new in 4.3.0 — Automatic Updates
+
+- **More → Settings → Updates…**: explicitly check stable GitHub releases, download and verify a newer signed package, and prepare an update. No automatic polling or unattended install.
+- Publisher authentication uses Ed25519, a pinned public key and a signed manifest binding the archive and every program file. Installation requires a separate application-local opt-in and terminal confirmation.
+- A separate updater holds a cooperative lock, writes backups and transaction intent, replaces approved files, and preserves recovery evidence. Pending recovery blocks supported normal launchers. A successful commit can offer a separately confirmed restart.
+- **First signed version:** manually extract into a new folder; do not update unsigned 4.2.0 in place. Keep all four original signed assets together outside the application folder for future updates. Copy only backed-up user data, not grants. The updater requires an unchanged supported layout and dependencies, a trusted external Python runtime and a writable parent directory. Unexpected files (including existing caches), source checkouts and modified program files are denied.
+- Independent-process update/recovery and extracted GUI startup have been tested separately. A real production signed-to-signed GUI update has not yet been demonstrated. See the [manual](docs/manual.txt) and [security policy](SECURITY.md).
+
+## Safety & Control Center — introduced in 4.2.0
 
 - Built-in automatic squash merge requires an explicit, scoped opt-in in **More → Settings → Safety settings…**, plus review of the specific task. It is off by default.
 - Review the resolved workspace and repository, revoke grants, or inspect up to 128 local permission changes in History. Authorization is rechecked before a merge request.
 - Settings group existing safety and display preferences. Action rows adapt to longer labels and compact windows, including RTL.
-- Other automatic actions are not implemented. The policy does not control arbitrary reviewed scripts, and is not a sandbox. Automatic updates, expanded localization and parallel execution remain future work.
+- Other unattended actions are not implemented. The policy does not control arbitrary reviewed scripts, and is not a sandbox. Expanded localization and parallel execution remain future work.
 
 ## Workflow Intelligence — introduced in 4.1.0
 
@@ -39,13 +47,13 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Run reviewed tasks that wait for CI and, with the scoped opt-in, merge the specified PR; exact commit checks and GitHub protection still apply. There is no automatic execution on import.
 - Preview actionable session context and choose masked or raw report export modes explicitly.
 
-GitHub integration is optional and can perform remote writes only when requested. Review commands and permissions before execution; neither the inspector nor secret masking is a security boundary. Automatic updates, expanded localization and parallel execution are not part of this release.
+GitHub integration is optional and can perform remote writes only when requested. Review commands and permissions before execution; neither the inspector nor secret masking is a security boundary. Expanded localization and parallel execution are not part of this release.
 
 ## Quick start
 
 1. Download the portable Windows ZIP from [Releases](https://github.com/DEViANCEVxXXxM/command-relay/releases), or clone the repository if a release is not yet available.
 2. Extract into a new writable folder. Install Python 3.10–3.14 (64-bit recommended), PowerShell and optionally Git for Git features.
-3. In that folder, install the GUI dependency:
+3. In that folder, install the required dependencies:
 
    ```powershell
    python -m pip install -r requirements.txt
@@ -86,11 +94,11 @@ With PySide6 installed, run `python tools/smoke_qt.py` for a non-executing GUI c
 
 ## Compatibility
 
-Version 4.2.0 builds on the package layout introduced in 4.0.3 (`command_relay/`, `docs/`, `examples/` and `tools/`). The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt). Do not copy automation grants into a new installation; review and explicitly enable a new grant if desired. Keep `automation-permissions.json` private.
+Version 4.3.0 builds on the package layout introduced in 4.0.3 (`command_relay/`, `docs/`, `examples/` and `tools/`). The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt). Do not copy automation grants into a new installation; review and explicitly enable a new grant if desired. Keep `automation-permissions.json` private.
 
 ## License
 
-Command Relay is distributed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution. The license permits commercial use, modification and distribution, including proprietary derivatives, subject to its terms. Preserve applicable notices, supply the license and identify modified files when distributing derivative works. Third-party dependencies are separately licensed; see their upstream terms. The portable archive does not bundle Python, PowerShell or PySide6.
+Command Relay is distributed under the [Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution. The license permits commercial use, modification and distribution, including proprietary derivatives, subject to its terms. Preserve applicable notices, supply the license and identify modified files when distributing derivative works. Third-party dependencies are separately licensed; see their upstream terms. The portable archive does not bundle Python, PowerShell, PySide6 or cryptography.
 
 The [disclaimer](DISCLAIMER.md) describes execution risks and is not an amendment to the license.
 

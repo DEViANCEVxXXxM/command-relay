@@ -32,13 +32,19 @@ layout: relay-home
 - Local evidence archives, comparisons and Git context tools.
 - No mandatory AI API key, account, telemetry or cloud connection. Commands can access the network if you run such commands.
 
+## Automatic Updates — 4.3.0
+
+- Manual release discovery, Ed25519 package verification and explicitly confirmed external updater.
+- Application-local installation permission, transaction backup/recovery and guarded restart.
+- First signed release requires fresh manual extraction; preserve all four original signed assets for future updates. No unattended installation or claim of production signed-to-signed GUI acceptance.
+
 ## Safety & Control Center — 4.2.0
 
 - Default-denied built-in automatic squash merge, with workspace/repository opt-in and authorization rechecks.
 - Local safety settings, revocation and bounded permission history.
 - Consolidated settings and adaptive action rows for long labels and RTL.
 
-Arbitrary reviewed scripts remain outside the policy boundary. Other built-in automatic actions, automatic updates and expanded localization are not implemented.
+Arbitrary reviewed scripts remain outside the policy boundary. Other unattended actions and expanded localization are not implemented.
 
 ## Workflow Intelligence — 4.1.0
 
