@@ -1,5 +1,5 @@
-COMMAND RELAY 4.0.3 — QT WORKBENCH / CLEAN EDITION
-Licensing and startup acknowledgement patch; compatible with 4.0. See README.md and CHANGELOG.md.
+COMMAND RELAY 4.1.0 — WORKFLOW INTELLIGENCE
+Compatible with existing task-v1, result-v1 and session-v1 packets. See README.md and CHANGELOG.md.
 
 LICENSE AND EXECUTION RISKS
 Apache License 2.0; see LICENSE and NOTICE. Read DISCLAIMER.md (English/Russian).
@@ -53,7 +53,10 @@ history may show Unknown. Use View full or Ctrl+click Copy for raw evidence.
 Do not rely on structured metrics or compact extracts for old reports.
 Task metadata is advisory; the workspace never changes automatically on import.
 Import does not execute; Run or Ctrl+Enter starts the reviewed editor contents.
-No API, credentials, uploads, telemetry or execution-policy override.
+No mandatory AI API, credentials, uploads, telemetry or execution-policy override.
+Optional GitHub tools use authenticated GitHub CLI and can make explicit remote writes.
+Review the intended repository, PR, CI and commit identity before authorizing a merge.
+Matching prior runs require explicit rerun confirmation when found in bounded history.
 
 COPY
 Click Copy: AI result JSON (command-relay/result-v1), compact JSON encoding.
@@ -119,6 +122,10 @@ monospace editor/terminal, 6000 display blocks and complete logs on disk.
 History supports search, filter, copy, compact comparison, metrics and ZIP.
 Search in terminal is limited to visible tail. Workspace Profiles are local.
 More > Git: local Git dashboard and fixed Git read operations.
+GitHub pull requests: optional authenticated CLI, inspect CI, explicit squash merge,
+and review/copy status. GitHub controls merge permissions.
+History > Review workspace session: preview protected session context before export.
+More > Reports: explicit masked JSON, masked compact text and RAW/unmasked copy modes.
 More > Project: project snapshot and selected source context.
 More > Reports: observed metrics, latest report and reports folder.
 More also contains SHA-256, task queue (session only, manual launch),

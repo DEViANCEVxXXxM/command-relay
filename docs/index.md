@@ -32,6 +32,14 @@ layout: relay-home
 - Local evidence archives, comparisons and Git context tools.
 - No mandatory AI API key, account, telemetry or cloud connection. Commands can access the network if you run such commands.
 
+## Workflow Intelligence — 4.1.0
+
+- Matching-run confirmation and improved indirect-operation warnings.
+- Optional GitHub PR dashboard and reviewed CI-to-squash-merge tasks.
+- Actionable session handoff, protected status exports and keyboard accessibility.
+
+GitHub features require an authenticated GitHub CLI. Remote writes require explicit user approval of the operation or task; GitHub branch protection still applies. Review every task and export. The application is not a sandbox.
+
 ## Getting started
 
 Windows, PowerShell and Python are required. The portable ZIP contains Python source and launchers, not a bundled Python runtime or compiled executable. See the [repository quick start]({{ site.github.repository_url }}#quick-start) for setup.

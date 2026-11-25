@@ -24,6 +24,16 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Local report archives and evidence ZIP exports; best-effort secret masking in protected exports.
 - No mandatory API key, account, telemetry or cloud connection. Commands may access the network if you explicitly run such commands.
 
+## What's new in 4.1.0 — Workflow Intelligence
+
+- Review matching previous runs before repeating a task.
+- Inspect more indirect Git and process operations with heuristic warnings.
+- Use the optional GitHub PR manager (`More → Git → GitHub pull requests…`) with authenticated `gh` to inspect CI and explicitly confirm squash merges.
+- Run reviewed tasks that wait for CI and merge the specified PR; exact commit checks and GitHub protection still apply. There is no automatic execution on import.
+- Preview actionable session context and choose masked or raw report export modes explicitly.
+
+GitHub integration is optional and can perform remote writes only when requested. Review commands and permissions before execution; neither the inspector nor secret masking is a security boundary. Automatic updates, expanded localization and parallel execution are not part of this release.
+
 ## Quick start
 
 1. Download the portable Windows ZIP from [Releases](https://github.com/DEViANCEVxXXxM/command-relay/releases), or clone the repository if a release is not yet available.
@@ -69,7 +79,7 @@ With PySide6 installed, run `python tools/smoke_qt.py` for a non-executing GUI c
 
 ## Compatibility
 
-Version 4.0.3 reorganizes the source tree into `command_relay/`, `docs/`, `examples/` and `tools/`. The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt).
+Version 4.1.0 builds on the package layout introduced in 4.0.3 (`command_relay/`, `docs/`, `examples/` and `tools/`). The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt).
 
 ## License
 
