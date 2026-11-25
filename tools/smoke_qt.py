@@ -66,6 +66,24 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert copy.call_count == 3
         start.assert_not_called()
     print('Qt workbench accessibility checks passed (named controls and explicit copy modes; no commands executed).')
+    # Settings navigation shares existing controls; no policy mutation or network work.
+    assert window.settings_menu.objectName() == 'workbench_settings'
+    assert window.settings_menu.menuAction() in window.more.menu().actions()
+    assert window.safety_action in window.settings_menu.actions()
+    assert window.safety_action not in window.more.menu().actions()
+    actions = {a.objectName(): a for a in window.settings_menu.actions() if a.objectName()}
+    assert set(actions) == {'settings_safety', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
+    assert actions['settings_safety'].isEnabled()
+    for name, control in [('settings_wrap', window.wrap), ('settings_dense', window.dense)]:
+        action = actions[name]
+        initial = control.isChecked()
+        assert action.isCheckable() and action.isChecked() == initial
+        action.trigger(); assert control.isChecked() != initial
+        control.setChecked(initial); assert action.isChecked() == initial
+    initial = window.sidebar_action.isChecked()
+    window.sidebar_action.trigger(); assert window.tabs.isHidden() == initial
+    window.sidebar_action.trigger(); assert window.sidebar_action.isChecked() == initial
+    print('Qt settings navigation checks passed (shared preferences and compact menu).')
     from command_relay import relay_permissions as permissions
     import time
     with tempfile.TemporaryDirectory() as tmp, patch.object(permissions, 'policy_path', return_value=Path(tmp)/'automation-permissions.json'), \

@@ -237,7 +237,7 @@ class App(QMainWindow):
         self.signals=WorkerSignals();self.signals.hashDone.connect(self.hash_done);self.signals.stopDone.connect(self.stop_done);self.signals.initialTail.connect(self.finish_initial_tail);self.initial_restore_pending=True;self.tool_busy=False;self.task_queue=[];self.signals.toolDone.connect(self.tool_done);self.copy_busy=False;self.signals.copyDone.connect(self.copy_done);self.warm_path=None;self.warm_result=None;self.warm_waiting=False;self.signals.warmDone.connect(self.warm_done)
         self.edit_controls=[];self.lib=pathlib.Path(self.settings.get('library') or ROOT/'scripts');
         central=QWidget();self.setCentralWidget(central);v=QVBoxLayout(central);v.setContentsMargins(12,9,12,8);v.setSpacing(7)
-        row=QHBoxLayout();h=QLabel('COMMAND RELAY');h.setStyleSheet('font-size:20px;font-weight:700;color:#f0f0f0');row.addWidget(h);row.addWidget(QLabel(f'{VERSION}  /  QT WORKBENCH'));row.addStretch();self.more=QPushButton('More');row.addWidget(self.more);self.more.setToolTip('Optional tools and display preferences');v.addLayout(row)
+        row=QHBoxLayout();h=QLabel('COMMAND RELAY');h.setStyleSheet('font-size:20px;font-weight:700;color:#f0f0f0');row.addWidget(h);row.addWidget(QLabel(f'{VERSION}  /  QT WORKBENCH'));row.addStretch();self.more=QPushButton('More');row.addWidget(self.more);self.more.setToolTip('Project tools, reports and settings');v.addLayout(row)
         row=QHBoxLayout();row.addWidget(QLabel('WORKSPACE'));self.cwd=QLineEdit(self.settings.get('workspace') or os.getcwd());row.addWidget(self.cwd,1);self.edit_controls.append(self.cwd);self.btn(row,'Browse',self.browse,True);self.btn(row,'Profiles',self.profiles,True);v.addLayout(row)
         row=QHBoxLayout();self.btn(row,'Open file',self.open,True);self.btn(row,'Paste / AI task',self.paste,True);row.addStretch();self.stopbtn=self.btn(row,'■ Stop',self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,'▶ Run commands',self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip('Run (Ctrl+Enter). Review the script and workspace first; identical task history is checked before execution. Commands use your account permissions.');v.addLayout(row)
         split=QSplitter(Qt.Orientation.Horizontal);self.main_split=split;split.setChildrenCollapsible(False);split.setOpaqueResize(True);split.setHandleWidth(5);v.addWidget(split,1)
@@ -279,7 +279,7 @@ class App(QMainWindow):
         self.editor.setAccessibleDescription('Review imported commands before running. Ctrl+Enter requests execution.')
         self.output.setAccessibleDescription('Visible tail of the report. Use Copy or History for the complete report.')
     def build_more_menu(self):
-        menu=QMenu(self.more);self.more.setMenu(menu)
+        menu=QMenu(self.more);menu.setObjectName('workbench_more');self.more.setMenu(menu)
         def action(parent,label,fn,edit=False):
             a=parent.addAction(label);a.triggered.connect(lambda checked=False:fn())
             if edit:self.edit_controls.append(a)
@@ -306,16 +306,19 @@ class App(QMainWindow):
         action(reports,'Folder',lambda:self.open_path(REPORTS))
         action(menu,'Task queue…',self.queue_dialog,True)
         action(menu,'SHA-256 file…',self.hash_tool,True)
-        self.safety_action=action(menu,'Safety settings…',self.safety_settings,True)
         menu.addSeparator()
-        view=menu.addMenu('View')
-        self.sidebar_action=view.addAction('Show sidebar');self.sidebar_action.setCheckable(True)
+        # One settings entry for current preferences and future language/update tools.
+        self.settings_menu=menu.addMenu('Settings');self.settings_menu.setObjectName('workbench_settings')
+        self.safety_action=action(self.settings_menu,'Safety settings…',self.safety_settings,True)
+        self.safety_action.setObjectName('settings_safety')
+        self.settings_menu.addSeparator()
+        self.sidebar_action=self.settings_menu.addAction('Show sidebar');self.sidebar_action.setObjectName('settings_sidebar');self.sidebar_action.setCheckable(True)
         self.sidebar_action.setChecked(self.settings.get('show_sidebar',True) is not False)
         self.sidebar_action.toggled.connect(self.tabs.setVisible)
         for label,control in [('Wrap output',self.wrap),('Dense output',self.dense)]:
-            a=view.addAction(label);a.setCheckable(True);a.setChecked(control.isChecked());a.toggled.connect(control.setChecked);control.toggled.connect(a.setChecked)
+            a=self.settings_menu.addAction(label);a.setObjectName('settings_wrap' if control is self.wrap else 'settings_dense');a.setCheckable(True);a.setChecked(control.isChecked());a.toggled.connect(control.setChecked);control.toggled.connect(a.setChecked)
             if control is self.dense:self.edit_controls.append(a)
-        action(view,'Find in output',self.show_search)
+        action(menu,'Find in output',self.show_search)
     def show_search(self):
         self.searchbar.show();self.search.setFocus();self.search.selectAll()
     def hide_search(self):
