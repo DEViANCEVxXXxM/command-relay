@@ -4,7 +4,7 @@ from contextlib import ExitStack
 from pathlib import Path
 import sys
 
-from .relay_updates import UpdateError, startup_installation_guard
+from .relay_updates import RecoveryRequired, UpdateError, startup_installation_guard
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,8 +23,11 @@ def main(run_gui=None, notify=None):
     with ExitStack() as stack:
         try:
             stack.enter_context(startup_installation_guard(ROOT))
-        except UpdateError:
-            message = 'Command Relay cannot start: installation is busy or its lock is unavailable. Close the other instance or updater and retry.'
+        except UpdateError as exc:
+            if isinstance(exc, RecoveryRequired):
+                message = 'Command Relay cannot start: unfinished update or recovery state unavailable. Preserve the installation and transaction files; use verified recovery before retrying.'
+            else:
+                message = 'Command Relay cannot start: installation is busy or its lock is unavailable. Close the other instance or updater and retry.'
             if notify is not None:
                 notify(message)
             elif sys.stderr is not None:

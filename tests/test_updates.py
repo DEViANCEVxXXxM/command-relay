@@ -1179,3 +1179,20 @@ class StandaloneUpdaterTests(unittest.TestCase):
         next(self.target.glob('*.sig')).write_bytes(b'x'*65)
         with self.assertRaisesRegex(u.UpdateError, 'size limit'):
             u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
+
+    def test_pending_transaction_denies_preflight_before_loading_packages(self):
+        marker = self.root / u.UPDATE_TRANSACTION_NAME
+        marker.mkdir()
+        (marker / 'intent.json').write_bytes(b'opaque')
+        before = self.snapshot()
+        with patch.object(u, 'load_local_signed_package') as load:
+            with self.assertRaises(u.RecoveryRequired):
+                u.inspect_local_installation(self.root, self.original, self.target, '4.10.0')
+            load.assert_not_called()
+        result = self.run_child()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('unfinished update', result.stderr.lower())
+        self.assertFalse(result.stdout)
+        self.assertEqual(before, self.snapshot())
+        with u.installation_lock(self.root):
+            pass

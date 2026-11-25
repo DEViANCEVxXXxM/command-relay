@@ -122,3 +122,73 @@ class StartupGuardTests(unittest.TestCase):
                 self.assertEqual(entry(), 1)
             self.assertEqual(log.read_bytes(), b'unchanged')
             notify.assert_called_once()
+
+
+class StartupRecoveryGateTests(unittest.TestCase):
+    def test_pending_directory_blocks_gui_and_preserves_files(self):
+        from command_relay import __main__ as launcher
+        from command_relay.relay_updates import UPDATE_TRANSACTION_NAME, installation_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            marker = root / UPDATE_TRANSACTION_NAME
+            marker.mkdir()
+            (marker / 'intent.json').write_bytes(b'opaque recovery evidence')
+            log = root / 'startup.log'
+            log.write_bytes(b'unchanged')
+            gui, notify = Mock(), Mock()
+            with patch.object(launcher, 'ROOT', root):
+                self.assertEqual(launcher.main(gui, notify), 1)
+            gui.assert_not_called()
+            self.assertIn('unfinished update', notify.call_args.args[0])
+            self.assertEqual(log.read_bytes(), b'unchanged')
+            self.assertEqual((marker / 'intent.json').read_bytes(), b'opaque recovery evidence')
+            with installation_lock(root):
+                pass
+
+    def test_wrong_type_and_case_alias_block(self):
+        from command_relay.relay_updates import UPDATE_TRANSACTION_NAME, startup_installation_guard, RecoveryRequired
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            marker = root / UPDATE_TRANSACTION_NAME.upper()
+            marker.write_bytes(b'not a directory')
+            with self.assertRaises(RecoveryRequired):
+                with startup_installation_guard(root):
+                    self.fail('guard allowed malformed marker')
+            self.assertEqual(marker.read_bytes(), b'not a directory')
+
+    def test_marker_link_blocks_without_following(self):
+        from command_relay.relay_updates import UPDATE_TRANSACTION_NAME, startup_installation_guard, RecoveryRequired
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            marker = root / UPDATE_TRANSACTION_NAME
+            try:
+                marker.symlink_to(root / 'missing')
+            except (OSError, NotImplementedError):
+                self.skipTest('symlink unavailable')
+            with self.assertRaises(RecoveryRequired):
+                with startup_installation_guard(root):
+                    self.fail('guard allowed marker symlink')
+            self.assertTrue(marker.is_symlink())
+
+    def test_directory_read_failure_denies_startup(self):
+        from command_relay.relay_updates import startup_installation_guard, RecoveryRequired, installation_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with patch.object(Path, 'iterdir', side_effect=PermissionError('denied')):
+                with self.assertRaises(RecoveryRequired):
+                    with startup_installation_guard(root):
+                        self.fail('guard allowed unreadable recovery state')
+            with installation_lock(root):
+                pass
+
+    def test_checkout_does_not_consume_marker(self):
+        from command_relay.relay_updates import UPDATE_TRANSACTION_NAME, startup_installation_guard, UPDATE_LOCK_NAME
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            (root / '.git').mkdir()
+            marker = root / UPDATE_TRANSACTION_NAME
+            marker.mkdir()
+            with startup_installation_guard(root):
+                pass
+            self.assertTrue(marker.is_dir())
+            self.assertFalse((root / UPDATE_LOCK_NAME).exists())
