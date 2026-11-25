@@ -37,6 +37,7 @@ RELEASE_FILES = (
     'command_relay/relay_qt.py',
     'command_relay/relay_session.py',
     'command_relay/relay_terms.py',
+    'command_relay/relay_updates.py',
     'command_relay/relay_version.py',
     'command_relay/relay_view.py',
     'command_relay/relay_windows.py',
