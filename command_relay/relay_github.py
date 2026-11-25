@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import time
 
 
 class GitHubError(RuntimeError):
@@ -227,3 +228,59 @@ class GitHubClient:
         except (GitHubError, AttributeError, TypeError):
             raise MergeUnknown('Merge outcome unknown or denied. Refresh PR state before any retry; no branch cleanup attempted.') from None
         return merged_sha
+
+    def wait_and_merge(self, number, *, head, head_sha, base, base_sha, required_checks,
+                       confirmed=False, timeout=600, interval=15, progress=None):
+        """Task-level authorization for one pinned squash merge, after bounded CI polling.
+
+        A reviewed task must explicitly authorize the target and write. No writes on
+        import, no persistent authorization, no retry of uncertain writes or deletion.
+        The time budget bounds polling; individual CLI requests have their own timeout.
+        Server branch protections remain authoritative.
+        """
+        if confirmed is not True:
+            raise GitHubError('Task-level squash merge was not explicitly authorized.')
+        _number(number); _label(head); _label(base); _sha(head_sha); _sha(base_sha)
+        if head == base or head_sha == base_sha:
+            raise GitHubError('Expected distinct head and base.')
+        if (not isinstance(required_checks, (list, tuple)) or not required_checks or
+                len(required_checks) > 500):
+            raise GitHubError('Expected an explicit nonempty check-name list.')
+        names = {_label(name) for name in required_checks}
+        if len(names) != len(required_checks):
+            raise GitHubError('Expected unique required check names.')
+        if type(timeout) is not int or not 30 <= timeout <= 1800 or type(interval) is not int or not 5 <= interval <= 60:
+            raise GitHubError('Invalid CI polling budget or interval.')
+        if progress is not None and not callable(progress):
+            raise GitHubError('Invalid progress callback.')
+        deadline = time.monotonic() + timeout
+        transient = {'GitHub does not report a clean, mergeable PR.',
+                     'At least one check is pending, failed or unknown.',
+                     'No successful check reported.',
+                     'Check results are missing or exceed the supported limit.'}
+        waiting = {'PENDING', 'EXPECTED', 'IN_PROGRESS', 'QUEUED', 'WAITING', 'REQUESTED', 'UNKNOWN'}
+        while time.monotonic() < deadline:
+            pr = self.inspect(number)
+            if (pr.repo, pr.number, pr.head, pr.head_sha, pr.base, pr.base_sha) != (self.repo, number, head, head_sha, base, base_sha):
+                raise GitHubError('PR identity, head or base changed; review a new task.')
+            if pr.state != 'OPEN':
+                raise GitHubError('PR is no longer open; inspect its state before any new task.')
+            if set(pr.blockers) - transient:
+                raise GitHubError('PR has a non-waitable blocker; review its current state.')
+            if any(c.state not in waiting | {'SUCCESS', 'NEUTRAL', 'SKIPPED'} for c in pr.checks):
+                raise GitHubError('CI has failed or returned an unrecognized conclusion; no merge attempted.')
+            if any(c.name in names and c.state in {'NEUTRAL', 'SKIPPED'} for c in pr.checks):
+                raise GitHubError('An explicitly required check did not succeed; no merge attempted.')
+            successes = {c.name for c in pr.checks if c.state == 'SUCCESS'}
+            ready = pr.ready and names <= successes and not any(c.state in waiting for c in pr.checks)
+            if progress is not None:
+                progress('CI_READY' if ready else 'WAITING_FOR_CI', len(names & successes), len(names))
+            if ready and time.monotonic() < deadline:
+                # The core re-inspects the complete snapshot and binds the PUT to head SHA.
+                # Any exception, including MergeUnknown, exits without retry.
+                return self.squash_merge(pr, confirmed=True)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(interval, remaining))
+        raise GitHubError('CI polling deadline elapsed; no merge attempted.')

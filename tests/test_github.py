@@ -124,3 +124,63 @@ class GitHubTests(unittest.TestCase):
         self.assertEqual(packet['merge_outcome'], 'verified_merged')
         self.assertNotIn(secret, json.dumps(packet))
         self.assertEqual(packet['privacy']['status'], 'redacted')
+
+
+    def automation(self, client, **overrides):
+        options = dict(head='feat/test', head_sha=B, base='main', base_sha=A,
+                       required_checks=['CI'], confirmed=True, timeout=30, interval=5)
+        options.update(overrides)
+        return client.wait_and_merge(42, **options)
+
+    def test_automation_requires_authorization_and_valid_policy(self):
+        client = self.client(); client.inspect = Mock(); client.squash_merge = Mock()
+        for overrides in ({'confirmed': False}, {'required_checks': []}, {'required_checks': ['CI', 'CI']},
+                          {'timeout': 0}, {'interval': 0}, {'head_sha': 'bad'}):
+            with self.assertRaises(GitHubError): self.automation(client, **overrides)
+        client.inspect.assert_not_called(); client.squash_merge.assert_not_called()
+
+    def test_automation_waits_then_merges_once(self):
+        client = self.client(); pending = copy.deepcopy(DATA)
+        pending['statusCheckRollup'][0]['status'] = 'IN_PROGRESS'
+        ready = parse_pr(REPO, 42, DATA, META)
+        client.inspect = Mock(side_effect=[parse_pr(REPO, 42, pending, META), ready])
+        client.squash_merge = Mock(return_value=C); progress = Mock()
+        with patch('command_relay.relay_github.time.sleep') as sleep:
+            self.assertEqual(self.automation(client, progress=progress), C)
+        sleep.assert_called_once(); client.squash_merge.assert_called_once_with(ready, confirmed=True)
+        self.assertEqual([call.args for call in progress.call_args_list], [('WAITING_FOR_CI', 0, 1), ('CI_READY', 1, 1)])
+
+    def test_automation_stops_on_changed_identity_or_closed_pr(self):
+        client = self.client(); client.squash_merge = Mock()
+        for changes in ({'headRefOid': C}, {'baseRefOid': C}, {'headRefName': 'other'},
+                        {'baseRefName': 'other'}, {'state': 'MERGED'}, {'isDraft': True},
+                        {'isCrossRepository': True}, {'reviewDecision': 'REVIEW_REQUIRED'}):
+            client.inspect = Mock(return_value=parse_pr(REPO, 42, dict(DATA, **changes), META))
+            with self.assertRaises(GitHubError): self.automation(client)
+        client.squash_merge.assert_not_called()
+
+    def test_automation_stops_on_failed_or_skipped_required_check(self):
+        client = self.client(); client.squash_merge = Mock()
+        for state in ('FAILURE', 'CANCELLED', 'ACTION_REQUIRED', 'NEUTRAL', 'SKIPPED'):
+            data = copy.deepcopy(DATA); data['statusCheckRollup'][0]['conclusion'] = state
+            client.inspect = Mock(return_value=parse_pr(REPO, 42, data, META))
+            with self.assertRaises(GitHubError): self.automation(client)
+        client.squash_merge.assert_not_called()
+
+    def test_automation_missing_expected_check_never_merges(self):
+        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client.squash_merge = Mock()
+        with patch('command_relay.relay_github.time.monotonic', side_effect=[0, 0, 30, 30]):
+            with self.assertRaisesRegex(GitHubError, 'deadline'): self.automation(client, required_checks=['not present'])
+        client.squash_merge.assert_not_called()
+
+    def test_automation_deadline_even_if_ready_after_poll(self):
+        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META)); client.squash_merge = Mock()
+        with patch('command_relay.relay_github.time.monotonic', side_effect=[0, 0, 31, 31]):
+            with self.assertRaisesRegex(GitHubError, 'deadline'): self.automation(client)
+        client.squash_merge.assert_not_called()
+
+    def test_automation_never_retries_unknown_merge(self):
+        client = self.client(); client.inspect = Mock(return_value=parse_pr(REPO, 42, DATA, META))
+        client.squash_merge = Mock(side_effect=MergeUnknown('unknown'))
+        with self.assertRaises(MergeUnknown): self.automation(client)
+        client.inspect.assert_called_once(); client.squash_merge.assert_called_once()
