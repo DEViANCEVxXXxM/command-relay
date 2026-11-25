@@ -919,3 +919,80 @@ def startup_installation_guard(root):
     else:
         with installation_lock(root):
             yield
+
+
+def load_local_signed_package(folder, version, *, current):
+    """Load four local release files with bounded reads and the pinned key.
+
+    Local asset IDs are placeholders for the existing integrity validator, not
+    GitHub identities. The detached publisher signature is the trust anchor.
+    No network requests or extraction; caller must separately authorize writes.
+    """
+    _version(version)
+    _version(current)
+    if _version(version) <= _version(current):
+        raise UpdateError('Expected a newer stable release.')
+    try:
+        folder = Path(folder)
+        if not folder.is_absolute() or '..' in folder.parts or folder.parent == folder:
+            raise UpdateError('Expected an absolute package directory.')
+        for parent in (*reversed(folder.parents), folder):
+            _checked_path(parent, directory=True)
+        stem = f'command-relay-v{version}-windows'
+        names = [stem + ext for ext in ('.zip', '.sha256', '.manifest.json', '.manifest.sig')]
+        blobs = [_read_recovery_file(folder, name, limit) for name, limit in zip(
+            names, (MAX_ARCHIVE, MAX_CHECKSUM, MAX_SIGNED_MANIFEST, 64))]
+        raw, checksum, manifest, signature = blobs
+        digest = hashlib.sha256(raw).hexdigest()
+        if checksum != f'{digest}  {names[0]}\n'.encode('ascii'):
+            raise UpdateError('Local archive checksum differs.')
+        assets = [ReleaseAsset(name, i, len(blob), 'sha256:' + hashlib.sha256(blob).hexdigest())
+                  for i, (name, blob) in enumerate(zip(names, blobs), 1)]
+        info = UpdateInfo(current, version, 1, *assets)
+        signed = SignedUpdate(DownloadedUpdate(info, raw, digest), manifest, signature)
+        verify_publisher_package(signed.download, signed.manifest, signed.signature)
+        return signed
+    except (OSError, ValueError, TypeError):
+        raise UpdateError('Unable to read local signed package.') from None
+
+
+def inspect_local_installation(root, original_folder, target_folder, target_version):
+    """Standalone preflight, no replacement, restart or installation grant.
+
+    Hold the portable application lock throughout inspection. The empty lock
+    file may be created, but program and user files are never written here.
+    The result is only a snapshot; a later installer must revalidate under lock.
+    """
+    with installation_lock(root):
+        # The original version is already installed; the synthetic comparison
+        # baseline permits the existing newer-release validator to check it.
+        original = load_local_signed_package(original_folder, VERSION, current='0.0.0')
+        target = load_local_signed_package(target_folder, target_version, current=VERSION)
+        return plan_installation(root, original, target)
+
+
+def updater_main(argv=None):
+    """Read-only standalone updater entry point (no Qt or package execution)."""
+    import argparse
+    import sys
+    parser = argparse.ArgumentParser(description='Inspect a signed portable update; never install it.')
+    parser.add_argument('--inspect', required=True, action='store_true', help='Inspect only')
+    parser.add_argument('--root', required=True, type=Path)
+    parser.add_argument('--original', required=True, type=Path)
+    parser.add_argument('--target', required=True, type=Path)
+    parser.add_argument('--target-version', required=True)
+    args = parser.parse_args(argv)
+    try:
+        plan = inspect_local_installation(args.root, args.original, args.target, args.target_version)
+    except UpdateError as exc:
+        print(f'Update inspection denied: {exc}', file=sys.stderr)
+        return 1
+    print(json.dumps({'schema': 'command-relay/update-preflight-v1', 'current': plan.current,
+                      'target': plan.target, 'replace': list(plan.replace),
+                      'unchanged': list(plan.unchanged), 'installation_authorized': False},
+                     sort_keys=True))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(updater_main())
