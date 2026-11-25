@@ -582,3 +582,109 @@ class StagingTests(unittest.TestCase):
                 self.assertNotEqual(first.directory, Path(existing))
                 self.assertEqual(sentinel.read_bytes(), b'current installation')
             self.assertEqual(sentinel.read_bytes(), b'current installation')
+
+
+class InstallPlanTests(unittest.TestCase):
+    def setUp(self):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        import tempfile
+        from pathlib import Path
+        self.key = Ed25519PrivateKey.generate()
+        self.pin = patch.object(u, 'PUBLISHER_PUBLIC_KEY', self.key.public_key().public_bytes_raw())
+        self.pin.start(); self.addCleanup(self.pin.stop)
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve() / 'portable'
+        self.root.mkdir()
+        self.files = {name: name.encode() for name in u.INSTALL_PROGRAM_FILES}
+        self.new_files = dict(self.files, **{'Start.pyw': b'new launcher'})
+        for name, data in self.files.items():
+            path = self.root / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        (self.root / 'settings.json').write_bytes(b'preserve me')
+        self.old = self.package('4.1.0', u.VERSION, self.files)
+        self.new = self.package(u.VERSION, '4.10.0', self.new_files)
+
+    def package(self, current, latest, files):
+        from dataclasses import replace
+        import zipfile
+        info, _, _ = DownloadTests().fixture()
+        stem = f'command-relay-v{latest}-windows'
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w') as archive:
+            for name, data in files.items():
+                member = zipfile.ZipInfo(stem + '/' + name)
+                member.create_system = 3
+                member.external_attr = 0o100644 << 16
+                archive.writestr(member, data)
+        raw = buf.getvalue()
+        digest = hashlib.sha256(raw).hexdigest()
+        info = replace(info, current=current, latest=latest,
+                       archive=replace(info.archive, name=stem+'.zip', size=len(raw), digest='sha256:'+digest),
+                       checksum=replace(info.checksum, name=stem+'.sha256'))
+        manifest = json.dumps({'schema': u.MANIFEST_SCHEMA, 'repository': u.REPOSITORY,
+            'version': latest, 'archive': {'name': info.archive.name, 'size': len(raw), 'sha256': digest},
+            'files': {n: hashlib.sha256(d).hexdigest() for n,d in files.items()}}, sort_keys=True).encode()
+        return u.SignedUpdate(u.DownloadedUpdate(info, raw, digest), manifest, self.key.sign(manifest))
+
+    def test_plan_read_only(self):
+        before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        plan = u.plan_installation(self.root, self.old, self.new)
+        self.assertEqual(plan.replace, ('Start.pyw',))
+        self.assertEqual(set(plan.unchanged), set(self.files)-{'Start.pyw'})
+        self.assertEqual(before, {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+
+    def test_allowlist_matches_build(self):
+        from tools.build_release import RELEASE_FILES
+        self.assertEqual(u.INSTALL_PROGRAM_FILES, frozenset(RELEASE_FILES))
+
+    def test_modified_or_missing_file_denied(self):
+        path = self.root/'Start.pyw'
+        path.write_bytes(b'changed')
+        with self.assertRaises(u.UpdateError): u.plan_installation(self.root,self.old,self.new)
+        path.unlink()
+        with self.assertRaises(u.UpdateError): u.plan_installation(self.root,self.old,self.new)
+
+    def test_git_checkout_denied(self):
+        for root in (self.root, self.root.parent):
+            marker = root/'.git'
+            marker.write_text('gitdir: elsewhere')
+            with self.assertRaisesRegex(u.UpdateError,'Git checkout'):
+                u.plan_installation(self.root,self.old,self.new)
+            marker.unlink()
+
+    def test_signed_user_data_denied(self):
+        target = self.package(u.VERSION,'4.10.0',dict(self.new_files, **{'settings.json':b'overwrite'}))
+        with self.assertRaisesRegex(u.UpdateError,'layout'):
+            u.plan_installation(self.root,self.old,target)
+        self.assertEqual((self.root/'settings.json').read_bytes(),b'preserve me')
+
+    def test_bad_signature_denied(self):
+        from dataclasses import replace
+        for old,new in ((replace(self.old,signature=b'x'*64),self.new),(self.old,replace(self.new,signature=b'x'*64))):
+            with self.assertRaises(u.UpdateError): u.plan_installation(self.root,old,new)
+
+    def test_wrong_version_denied(self):
+        with self.assertRaises(u.UpdateError): u.plan_installation(self.root,self.new,self.new)
+
+    def test_hardlink_denied(self):
+        import os
+        path = self.root/'Start.pyw'
+        try:
+            os.link(path,self.root.parent/'linked')
+        except OSError:
+            self.skipTest('Hardlinks unavailable')
+        with self.assertRaisesRegex(u.UpdateError,'Unsafe installation path'):
+            u.plan_installation(self.root,self.old,self.new)
+
+    def test_symlink_denied(self):
+        path = self.root/'Start.pyw'
+        original = self.root.parent/'original'
+        path.rename(original)
+        try:
+            path.symlink_to(original)
+        except OSError:
+            self.skipTest('Symlinks unavailable')
+        with self.assertRaisesRegex(u.UpdateError,'Unsafe installation path'):
+            u.plan_installation(self.root,self.old,self.new)
