@@ -221,3 +221,85 @@ class DownloadTests(unittest.TestCase):
             with self.assertRaises(u.UpdateError) as ctx:
                 u.download_update(info)
             self.assertNotIn('private', str(ctx.exception))
+
+
+class PackageTests(unittest.TestCase):
+    def package(self, entries, compression=None):
+        import hashlib
+        import zipfile
+        import warnings
+        from dataclasses import replace
+        info, _, _ = DownloadTests().fixture()
+        buf = io.BytesIO()
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', UserWarning)
+            with zipfile.ZipFile(buf, 'w') as z:
+                for name, data, mode in entries:
+                    item = zipfile.ZipInfo('command-relay-v4.10.0-windows/' + name)
+                    item.create_system = 3
+                    item.external_attr = mode << 16
+                    z.writestr(item, data, compress_type=compression or zipfile.ZIP_STORED)
+        raw = buf.getvalue()
+        digest = hashlib.sha256(raw).hexdigest()
+        info = replace(info, archive=replace(info.archive, size=len(raw), digest='sha256:'+digest))
+        return u.DownloadedUpdate(info, raw, digest)
+
+    def manifest(self, **files):
+        import hashlib
+        return {name: hashlib.sha256(data).hexdigest() for name, data in files.items()}
+
+    def test_exact_package(self):
+        import zipfile
+        entries = [('Start.pyw', b'start', 0o100644), ('command_relay/core.py', b'code', 0o100644)]
+        manifest = self.manifest(**{'Start.pyw': b'start', 'command_relay/core.py': b'code'})
+        for method in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+            self.assertEqual(u.inspect_package(self.package(entries, method), manifest), tuple(sorted(manifest)))
+
+    def test_reject_unexpected_paths(self):
+        for name in ('../Start.pyw', '/Start.pyw', 'C:/Start.pyw', 'a\\Start.pyw', 'START.pyw', 'settings.json'):
+            with self.subTest(name=name), self.assertRaises(u.UpdateError):
+                u.inspect_package(self.package([(name, b'x', 0o100644)]), self.manifest(**{'Start.pyw': b'x'}))
+
+    def test_reject_unsafe_manifest(self):
+        p = self.package([('Start.pyw', b'x', 0o100644)])
+        for name in ('../x', 'C:/x', 'a\\b', '/x', 'aux.txt', 'x/COM1.py', 'trailing.', 'a//b', 'a:b', 'a b', 'x\x00y'):
+            with self.subTest(name=name), self.assertRaises(u.UpdateError):
+                u.inspect_package(p, self.manifest(**{name: b'x'}))
+        for names in (('a', 'A'), ('a', 'A/b')):
+            with self.assertRaises(u.UpdateError):
+                u.inspect_package(p, self.manifest(**dict.fromkeys(names, b'x')))
+
+    def test_reject_duplicate_and_missing_members(self):
+        p = self.package([('a', b'x', 0o100644), ('a', b'x', 0o100644)])
+        with self.assertRaises(u.UpdateError):
+            u.inspect_package(p, self.manifest(a=b'x', b=b'x'))
+        with self.assertRaises(u.UpdateError):
+            u.inspect_package(p, self.manifest(a=b'x'))
+
+    def test_reject_special_members(self):
+        for mode in (0o120777, 0o040755, 0o010644, 0o060644):
+            with self.subTest(mode=mode), self.assertRaises(u.UpdateError):
+                u.inspect_package(self.package([('a', b'x', mode)]), self.manifest(a=b'x'))
+
+    def test_reject_member_hash_mismatch(self):
+        with self.assertRaisesRegex(u.UpdateError, 'content differs'):
+            u.inspect_package(self.package([('a', b'x', 0o100644)]), self.manifest(a=b'y'))
+
+    def test_expanded_limits(self):
+        p = self.package([('a', b'abc', 0o100644), ('b', b'def', 0o100644)])
+        manifest = self.manifest(a=b'abc', b=b'def')
+        for key, limit in (('MAX_MEMBER_BYTES', 2), ('MAX_PACKAGE_BYTES', 5), ('MAX_PACKAGE_FILES', 1)):
+            with patch.object(u, key, limit), self.assertRaises(u.UpdateError):
+                u.inspect_package(p, manifest)
+
+    def test_recheck_archive_digest_and_malformed_zip(self):
+        import hashlib
+        from dataclasses import replace
+        p = self.package([('a', b'x', 0o100644)])
+        with self.assertRaisesRegex(u.UpdateError, 'integrity changed'):
+            u.inspect_package(replace(p, sha256='0'*64), self.manifest(a=b'x'))
+        raw = b'not a ZIP'
+        digest = hashlib.sha256(raw).hexdigest()
+        info = replace(p.info, archive=replace(p.info.archive, size=len(raw), digest='sha256:'+digest))
+        with self.assertRaisesRegex(u.UpdateError, 'damaged release ZIP'):
+            u.inspect_package(u.DownloadedUpdate(info, raw, digest), self.manifest(a=b'x'))
