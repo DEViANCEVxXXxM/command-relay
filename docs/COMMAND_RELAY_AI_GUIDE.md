@@ -154,6 +154,14 @@ it. Legacy grants in general settings are not migrated. A malformed policy
 fails closed; a stale writer lock requires manual inspection before removal.
 Never share or modify the policy or lock from an AI task. The UI does not
 perform a merge or grant permission merely by opening it.
+The History action shows the last 128 committed permission changes, in local
+storage only. Policy and history are replaced together; no-op changes do not
+create entries. Older entries are counted when discarded. Workspace identifiers
+are hashes of normalized paths (not anonymous IDs); repository names remain
+local. History is not tamper-proof, does not record arbitrary commands or merge
+outcomes, and does not reconstruct older grants. Do not export the policy file.
+Older builds that reject the added history field fail closed; do not downgrade
+by stripping the field or silently restoring old grants.
 
 Use `wait_and_merge` with an explicit confirmation flag only after those checks
 and the user's review. Choose a finite polling budget and interval (the current
