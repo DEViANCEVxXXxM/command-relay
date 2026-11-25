@@ -311,3 +311,51 @@ def inspect_package(download, expected_files):
             raise
         raise UpdateError('Invalid or damaged release ZIP.') from None
     return tuple(sorted(expected))
+
+
+# Provision only from an independently reviewed publisher public key. Never
+# accept a key supplied by the release, manifest, network, or local settings.
+PUBLISHER_PUBLIC_KEY = None
+MAX_SIGNED_MANIFEST = 128 * 1024
+MANIFEST_SCHEMA = 'command-relay/update-manifest-v1'
+
+
+def verify_publisher_package(download, manifest_bytes, signature):
+    """Verify a detached Ed25519 signature and its exact package binding.
+
+    The key is intentionally unprovisioned until a separate reviewed change.
+    A verified package is not authorization to install or execute it.
+    """
+    key = PUBLISHER_PUBLIC_KEY
+    if not isinstance(key, bytes) or len(key) != 32:
+        raise UpdateError('Publisher trust key is not configured.')
+    if (not isinstance(manifest_bytes, bytes) or not 0 < len(manifest_bytes) <= MAX_SIGNED_MANIFEST
+            or not isinstance(signature, bytes) or len(signature) != 64):
+        raise UpdateError('Invalid signed manifest or signature size.')
+    try:
+        from cryptography.exceptions import InvalidSignature, UnsupportedAlgorithm
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except (ImportError, OSError):
+        raise UpdateError('Publisher signature verification is unavailable.') from None
+    try:
+        Ed25519PublicKey.from_public_bytes(key).verify(signature, manifest_bytes)
+    except (InvalidSignature, UnsupportedAlgorithm, ValueError):
+        raise UpdateError('Publisher signature verification failed.') from None
+    try:
+        data = json.loads(manifest_bytes.decode('utf-8'), object_pairs_hook=_unique_object)
+    except (UnicodeError, ValueError, RecursionError):
+        raise UpdateError('Invalid signed manifest JSON.') from None
+    if not isinstance(download, DownloadedUpdate):
+        raise UpdateError('Invalid downloaded package.')
+    _validate_download(download.info)
+    if (not isinstance(data, dict) or set(data) != {'schema', 'repository', 'version', 'archive', 'files'}
+            or data['schema'] != MANIFEST_SCHEMA or data['repository'] != REPOSITORY
+            or data['version'] != download.info.latest):
+        raise UpdateError('Signed manifest identity differs.')
+    archive = data['archive']
+    if (not isinstance(archive, dict) or set(archive) != {'name', 'size', 'sha256'}
+            or archive['name'] != download.info.archive.name
+            or type(archive['size']) is not int or archive['size'] != download.info.archive.size
+            or archive['sha256'] != download.sha256):
+        raise UpdateError('Signed archive identity differs.')
+    return inspect_package(download, data['files'])
