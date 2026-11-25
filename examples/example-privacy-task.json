@@ -1,0 +1,20 @@
+{
+  "schema": "command-relay/task-v1",
+  "task_id": "relay-privacy-smoke-37",
+  "title": "Privacy masking smoke test (fictional data)",
+  "purpose": "Verify masking and artifact recognition using invented placeholder values only; no files or network are accessed by the script.",
+  "expected": "PRIVACY_FIXTURE_PASS=True; exit 0; privacy.status=redacted; both fictional password occurrences masked; one reported artifact path.",
+  "workspace_hint": "Any existing workspace, including Relay itself.",
+  "language": "powershell",
+  "script": "@step Fictional values\nWrite-Output 'PASSWORD=relay-demo-only-123456789'\nWrite-Output 'ECHO=relay-demo-only-123456789'\n@step Artifact hint\nWrite-Output ('ARTIFACT_PATH=' + (Join-Path (Get-Location).Path 'example-ai-task.json'))\n@step Result\nWrite-Output 'PRIVACY_FIXTURE_PASS=True'\nexit 0\n",
+  "assertions": {
+    "exit_code": 0,
+    "metrics": [
+      {
+        "key": "PRIVACY_FIXTURE_PASS",
+        "equals": true,
+        "occurrence": "all"
+      }
+    ]
+  }
+}

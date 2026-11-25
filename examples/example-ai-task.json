@@ -1,0 +1,32 @@
+{
+  "schema": "command-relay/task-v1",
+  "task_id": "relay-qt-smoke-40",
+  "title": "Command Relay 4.0 smoke test",
+  "purpose": "Verify canonical stage markers, Unicode, metrics and result export without modifying the workspace.",
+  "expected": "COUNT=15; RELAY_PASS=True; process exit 0",
+  "workspace_hint": "Use your selected workspace; this field never changes it automatically.",
+  "language": "powershell",
+  "script": "@step Session\nWrite-Output 'UTF8=Привет, мир! — café'\n@step Metrics\nWrite-Output 'COUNT=12'\nWrite-Output 'COUNT=15'\nWrite-Output '{\"Passed\":3,\"Failed\":0}'\n@step Results\nWrite-Output 'RELAY_PASS=True'\nexit 0\n",
+  "assertions": {
+    "exit_code": 0,
+    "metrics": [
+      {
+        "key": "COUNT",
+        "equals": 15,
+        "occurrence": "last"
+      },
+      {
+        "key": "RELAY_PASS",
+        "equals": true
+      },
+      {
+        "key": "Passed",
+        "equals": 3
+      },
+      {
+        "key": "Failed",
+        "equals": 0
+      }
+    ]
+  }
+}

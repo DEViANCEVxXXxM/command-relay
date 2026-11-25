@@ -1,0 +1,5 @@
+@step Session
+Write-Output 'UTF8=Привет, мир! — café'
+@step Results
+Write-Output 'RELAY_PASS=True'
+exit 0

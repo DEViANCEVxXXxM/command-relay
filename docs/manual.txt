@@ -1,0 +1,231 @@
+COMMAND RELAY 4.0.3 — QT WORKBENCH / CLEAN EDITION
+Licensing and startup acknowledgement patch; compatible with 4.0. See README.md and CHANGELOG.md.
+
+LICENSE AND EXECUTION RISKS
+Apache License 2.0; see LICENSE and NOTICE. Read DISCLAIMER.md (English/Russian).
+Command Relay is not a sandbox. AI-generated and all other commands, scripts,
+executables and code run through it are used at your own risk, subject to applicable law.
+The maintainers and contributors do not guarantee their safety or accept liability
+for resulting damage to the extent permitted by law. At each startup, explicitly
+accept the notice to open the workbench; decline or close it to exit.
+The notice does not amend the license or override mandatory legal protections.
+
+INSTALL
+Extract to a NEW folder (do not overlay an old release). Optionally copy your
+reports/, scripts/ and settings.json from the old folder, leaving originals intact.
+Install dependencies only if needed: python -m pip install -r requirements.txt
+Double-click Start.pyw for normal GUI launch without a persistent console.
+Windows must associate .pyw with Python's GUI interpreter (pythonw.exe).
+Start.cmd is a compatibility shortcut; its console may flash briefly, then closes.
+tools/Start-Debug.cmd intentionally keeps the console available for troubleshooting.
+The normal launcher redirects Python stdout/stderr to startup.log (replaced on
+launch; a temporary log is used if the app folder is not writable). Launch
+failures show a message with the log location. This does not start any task.
+The running app uses command_relay/assets/relay-icon.ico (transparent, multi-resolution) for its
+window and taskbar, with command_relay/assets/relay-icon.png as a fallback. Existing pinned shortcuts
+may retain their previous icon; Windows Explorer file associations are unchanged.
+
+USE WITH AI-CHAT
+
+Attach docs/COMMAND_RELAY_AI_GUIDE.md to your AI chat and use this prompt:
+"Use Command Relay to interact with my local development environment.
+Read the attached docs/COMMAND_RELAY_AI_GUIDE.md and follow its instructions throughout our collaboration.
+You do not have direct access to my computer. Generate JSON Task Packets, use built-in Command Relay tools when appropriate, and analyze the Result Packets I provide.
+Guide me through the actual application interface whenever necessary. If I make mistakes when importing tasks, selecting workspaces, executing commands, or sharing results, explain how to correct them.
+Do not assume that I have programming or PowerShell experience. Minimize manual actions, unnecessary questions, redundant tests, and excessive diagnostic output.
+Prefer safe, reproducible, evidence-based workflows. Clearly distinguish verified results from assumptions.
+Apply these instructions to any project we work on, regardless of its programming language, technology stack, or purpose."
+
+QUICK WORKFLOW
+Choose your workspace once. Import the AI task, review it, Run commands,
+then Copy and paste into the chat. No new mandatory controls or setup for ordinary tasks. The main screen is simplified: Steps and
+Scripts in the sidebar; More at the top right for optional operations.
+Find reveals the search field only when needed (Ctrl+F). Copy and History
+remain visible. More > View can hide the sidebar or change output settings.
+Protected Copy and compact text exports are prepared in a worker; wait for Copied before pasting.
+
+INPUT
+Use TXT, PS1, pasted commands or command-relay/task-v1 JSON. The single stage
+syntax is @step Title. Stage numbers are generated automatically. Retired stage
+directives are rejected before execution. Old script files are not converted.
+Old reports are preserved as text; obsolete footers are not recognized, so
+history may show Unknown. Use View full or Ctrl+click Copy for raw evidence.
+Do not rely on structured metrics or compact extracts for old reports.
+Task metadata is advisory; the workspace never changes automatically on import.
+Import does not execute; Run or Ctrl+Enter starts the reviewed editor contents.
+No API, credentials, uploads, telemetry or execution-policy override.
+
+COPY
+Click Copy: AI result JSON (command-relay/result-v1), compact JSON encoding.
+Whitespace between JSON fields is minimized; detected secrets are masked in exported data.
+Shift+click: protected text. Ctrl+click: RAW full report without masking (Ctrl wins).
+Reports up to 48,000 Unicode characters are selected in full before privacy masking;
+larger reports use a bounded compact extract. The budget is
+for the output field, not the whole JSON packet. Git hash/ref lines are selected
+along with structured results and the beginning/end. For oversized extracts,
+whole lines may still be omitted to fit; no guarantee that every hash survives.
+The result-v1 schema is unchanged with additive fields: omitted_lines,
+filter_omitted_lines, budget_omitted_lines (blank lines count too). A full
+payload has view=full and zero omissions. budget_truncated means extra budget
+reduction was needed after filtering. History compact comparison uses the same
+bounded view. Ctrl+click always provides the original unfiltered report.
+Compact extracts may omit important context; process exit is not a test verdict.
+Inspect data before sharing. Full report is streamed to disk and archived.
+
+AI INTELLIGENCE
+Optional task-v1 assertions: exit_code and up to 16 scalar equality checks
+(metrics, key/equals/occurrence all or last). Evaluated against the complete
+report when copying AI JSON, before any text omissions. No declarations means
+NOT_REQUESTED; missing evidence, cancelled/partial runs and edited imported
+tasks are INCONCLUSIVE. A PASS means the declared checks matched the text,
+not independent verification. Process status remains separate.
+New runs record a lightweight start-of-run project snapshot: fixed root file
+markers, marker-based technology hints and Git HEAD when readable from a normal .git directory (detached or
+loose ref). No Git subprocess, recursive scan, source text or remote URL.
+Packed refs, worktree gitfiles and other layouts may report unknown HEAD.
+Smart Evidence returns heuristic counts and bounded examples for compact logs.
+Structured zero failure/error counts are not errors. Explicit path-shaped
+artifact metrics are hints only; no files are opened or verified automatically.
+Automatic evidence/assertion scan limit: 8,000,000 characters; lines over
+16,384 characters are skipped with a visible limitation. Original logs stay
+unchanged. Additional JSON fields are outside the 48,000-character output cap.
+More > Project > Project context is optional for a fresh lightweight snapshot.
+
+SESSION HANDOFF (NEW CHAT)
+Run history is saved automatically in the existing reports/ folder. New runs
+record task title, purpose and expected outcome (up to 300 characters each,
+only when the imported script is unchanged). No separate session database.
+To continue in a new AI chat: select the same WORKSPACE, choose More > Copy
+session context, wait for Copied, then paste into the new chat with the guide.
+A command-relay/session-v1 packet contains up to 12 recent matching archived
+runs, their reported exit/cancellation status, available Git HEAD, declared
+intent, report identity, assertion checks and evidence counts when scanned.
+The export runs in a worker, with no startup scanning or extra network access.
+Normal Copy still returns only the selected run. Session summaries are not
+sent automatically. No raw log excerpts or source files are included; task
+metadata and metric values may still be sensitive, so review before sharing.
+Limits: 10,000 directory entries, 250 newest candidate archive headers,
+512,000 bytes per full report scan, 4,000,000 body bytes total, and 24,000
+characters for the compact session JSON. Older rows may be omitted; limits are
+reported. Larger reports use header/footer only and NOT_EVALUATED assertions.
+Matching uses normalized absolute workspace paths, not repository identity;
+relative historical paths, aliases and moved workspaces may not match.
+This is local run history, not conversation memory, verified project progress,
+or an automatically inferred next task. Old reports lack newer task intent.
+
+WORKBENCH
+Qt Fusion UI, live splitters, animated activity strip, colored status bar,
+monospace editor/terminal, 6000 display blocks and complete logs on disk.
+History supports search, filter, copy, compact comparison, metrics and ZIP.
+Search in terminal is limited to visible tail. Workspace Profiles are local.
+More > Git: local Git dashboard and fixed Git read operations.
+More > Project: project snapshot and selected source context.
+More > Reports: observed metrics, latest report and reports folder.
+More also contains SHA-256, task queue (session only, manual launch),
+Clear editor and View options. These are optional; routine tasks need none.
+Evidence ZIP contains selected reports and SHA-256 manifest. No automatic upload.
+Use only trusted scripts. Runs are not sandboxed. Stop cannot roll back effects.
+Windows execution policy is respected. Do not weaken system protections.
+
+VALIDATION
+Run examples/example-ai-task.json first: expected COUNT=15, RELAY_PASS=True, exit 0, assertions.status=PASS.
+Python tests: python -m unittest -v. Native Qt GUI and PowerShell on Windows
+not executed in the development environment for this release.
+
+AUTOMATIC COMPARISON AND ARTIFACTS (3.6)
+Normal Copy includes comparison and artifacts. No additional action is needed.
+Repeat the identical imported task in the same workspace to compare against
+the nearest earlier matching archive. Matching requires task ID, editor hash,
+prepared script hash, unchanged import and identical assertion criteria.
+Reports from other workspaces, future reports and edited tasks are excluded.
+The earlier matching run must be complete, not cancelled and not inconclusive.
+Limits: 10,000 directory entries, 100 older headers (32 KiB each), one baseline
+body up to 512,000 bytes. If unavailable, comparison explains why. The JSON
+reports process exit, assertion transitions, last declared metric values and
+heuristic warning/error/test-line counts; Git HEAD changes are shown if known.
+These are observations, not proof of regression, improvement or identical
+environments. All AI Copy operations run in a background thread. No startup
+scan, network requests or new dependencies. Raw report export is unchanged and NOT masked.
+
+Artifacts are reported path hints from explicit KEY=value or single-line JSON
+fields: ARTIFACT, ARTIFACT_PATH, OUTPUT_FILE, OUTPUT_PATH, REPORT_FILE, LOG_FILE,
+RESULT_DIR, BUILD_FILE, BUILD_DIR, BINARY_FILE, EVIDENCE_FILE, MANIFEST_FILE.
+Up to 12 distinct key/path pairs, 512 characters per path, with line numbers.
+Relay never opens or checks these paths or attaches their files automatically.
+The task must report creation/existence/hash checks separately if needed.
+The ordinary output field keeps the existing full/compact selection budget and accounting before masking.
+To smoke-test comparison, run examples/example-ai-task.json twice in the same workspace,
+then Copy. The second result should show comparison.status=compared and COUNT
+delta=0, with both assertion statuses PASS. First run may have no baseline.
+
+TRUST AND PRIVACY (3.7)
+Task Inspector scans editor text after a brief debounce, then checks the
+prepared script at Run. Ordinary tasks have no new confirmation. Detected
+network, file/repository and install patterns show a small advisory label.
+High-risk patterns (e.g. recursive deletion, disk operations, force push,
+security settings, dynamic execution) require a separate confirmation; No is
+selected by default. The inspection is heuristic, not a PowerShell parser,
+security boundary or sandbox. False positives and missed effects are possible.
+New reports record the inspection summary (line numbers refer to the prepared
+script); no raw matched command snippets are exported by the inspector.
+
+Default AI Copy, Shift+click text, session context and tool JSON previews/exports
+apply best-effort local masking of recognizable credential assignments,
+credential fields, common token shapes, authorization/cookie headers, URL
+credentials and private-key blocks. The app also masks bounded repeated values
+where detected, including assertion/evidence/comparison fields. Relay does not
+send any data to a service. Masking is not complete anonymization; review every export.
+User names, local paths, arbitrary secrets, split/encoded values and other
+sensitive data may remain. Some ordinary strings can be masked by mistake.
+The privacy object reports status (redacted/no_matches), replacements (not a
+count of distinct secrets), source_scan_limited and alias_limit_reached. Full
+source alias discovery is capped at 8 million characters; all exported text
+fields are scanned. Repeated-value matching is bounded. Assertions/comparisons
+are computed on unmasked evidence before export. Hashes and line counts refer
+to the original report; view=full means no compact selection omissions, not
+necessarily byte-identical output. Masking can change output length and lines.
+If protection fails, the protected export fails rather than falling back to raw.
+Ctrl+click Copy, Ctrl+Shift+C, View full, Open latest, Evidence ZIP, local logs,
+and manual selection from the editor/terminal are RAW and may contain secrets.
+Do not share raw data without reviewing it. No automatic upload or deletion.
+
+WINDOWS SMOKE TEST
+Run examples/example-ai-task.json normally; expect PASS and privacy.status=no_matches.
+Then optionally run examples/example-privacy-task.json and use normal Copy. Expect PASS,
+privacy.status=redacted, [REDACTED] in both fictional password occurrences and
+one reported artifact hint (not verified existence or creation). No real
+credentials, file writes by the task, network, or risky commands are needed.
+
+FAST RESULTS (3.8)
+After a run is archived, Relay may prepare the protected AI JSON locally in a
+background worker (one speculative worker; reports up to 1,000,000 bytes).
+Normal Copy reuses this result if the report, archive directory and selected
+baseline still have matching file metadata. This is best-effort freshness,
+not a cryptographic integrity check. An early click waits for that worker,
+then uses the ordinary protected export if needed. Larger reports, older
+reports and other copy modes are prepared on demand. No clipboard change
+occurs without an explicit copy action. No additional files, dependencies,
+network access, schema changes or automatic execution are introduced.
+If a run cannot be archived, Copy must not silently return an older run.
+Wait for Copied before pasting. Web Relay remains deferred.
+
+4.0 STABILITY UPDATE
+The regular Import > Run > Copy workflow and task-v1/result-v1 schemas stay
+unchanged. Invalid JSON-looking objects are rejected during import instead
+of being passed to PowerShell. Report identity fields are read only from the
+report header, not from similar-looking lines printed by the task. This is
+not authentication of report contents.
+The visible terminal is additionally bounded to about 512,000 Python text
+characters (with a smaller target after trimming) and 6,000 Qt blocks.
+Long outputs may lose earlier display text or reset the visible selection;
+original archived reports and export evidence are unaffected. Restoration
+reads at most 2 MB. Use View full or a reviewed report export for older text.
+History loads metadata in a background worker; search and filters reuse the
+snapshot, with a short debounce. Refresh explicitly reloads it. The window
+lists up to 3,000 recent reports from at most 50,000 directory entries and
+shows a notice when limited. Older files are not deleted; access them in
+More > Reports > Folder. If the directory enumeration limit is reached,
+not all recent reports may have been seen. A new run waits until an explicitly
+requested Copy finishes to avoid confusing report ownership. The app does
+not copy automatically. No new dependencies, network actions or mandatory
+controls. Web Relay remains deferred.

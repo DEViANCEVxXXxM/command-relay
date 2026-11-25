@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage*
+htmlcov/
+# Build output
+/dist/
+/build/
+*.egg-info/
+# Local Command Relay data (may contain private paths, scripts and secrets)
+/reports/
+/scripts/
+/settings.json
+/startup.log
+/startup-timing.json
+/relay-export.json
+/evidence-*.zip
+*.log
+*.tmp
+.env
+.env.*
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
