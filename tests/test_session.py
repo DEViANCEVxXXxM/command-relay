@@ -43,6 +43,38 @@ class SessionTests(unittest.TestCase):
         m=i.run_metadata(self.ws,{'title':'x'*4000,'expected':'ok'},True);self.assertEqual(len(m['task_intent']['title']),300);self.assertEqual(i.run_metadata(self.ws,{'title':'x'},False)['task_intent'],{})
     def test_relative_and_fake_header(self):
         p,t=self.add(1,workspace='relative');self.add(2,workspace=self.root/'other',body=f'Working directory: {self.ws}');self.assertEqual(self.packet()['runs'],[])
+    def test_actionable_handoff(self):
+        self.add(1); self.add(2,body='COUNT=12'); self.add(3,cancel=True)
+        self.add(4,partial=True); self.add(5,checks=False)
+        packet=self.packet(); rows=packet['runs']
+        self.assertEqual([r['continuation']['next_action'] for r in rows], [
+            'review_report_and_missing_checks','inspect_partial_effects',
+            'inspect_partial_effects','inspect_failure_and_existing_effects','verify_current_state_before_reuse'])
+        self.assertEqual(packet['handoff']['latest_report'],rows[0]['report_file'])
+        self.assertEqual(sum(packet['handoff']['action_counts'].values()),len(rows))
+    def test_current_head_relation(self):
+        git=self.ws/'.git';git.mkdir();(git/'HEAD').write_text('a'*40)
+        self.add(1);(git/'HEAD').write_text('b'*40);self.add(2)
+        packet=self.packet();self.assertEqual(packet['current_project']['git_head'],'b'*40)
+        self.assertEqual([r['continuation']['git_head_relation'] for r in packet['runs']],['same_as_run_start','differs_from_run_start'])
+        self.assertFalse(packet['current_project']['network'])
+    def test_handoff_trim_and_empty(self):
+        self.assertEqual(self.packet()['handoff']['latest_report'],None)
+        for n in range(12):self.add(n)
+        with patch.object(s,'MAX_PACKET',3000):
+            p=self.packet();self.assertGreater(p['limits']['packet_omitted_runs'],0)
+            self.assertEqual(sum(p['handoff']['action_counts'].values()),len(p['runs']))
+            self.assertLessEqual(len(json.dumps(p,ensure_ascii=False,separators=(',',':'))),3000)
+    def test_nonzero_exit_and_unscanned_are_not_success(self):
+        p,text=self.add(1);p.write_text(text.replace('Process exit code: 0','Process exit code: 1'),encoding='utf-8')
+        self.add(2,body='x'*600000)
+        self.assertEqual([r['continuation']['next_action'] for r in self.packet()['runs']],['review_report_and_missing_checks','inspect_failure_and_existing_effects'])
+    def test_protected_handoff(self):
+        from command_relay.relay_privacy import protect_packet
+        p,text=self.add(1);p.write_text(text.replace('Validate count','PASSWORD=fictional-handoff-secret'),encoding='utf-8')
+        out=json.dumps(protect_packet(self.packet()))
+        self.assertNotIn('fictional-handoff-secret',out)
+        self.assertIn('verify_current_state_before_reuse',out)
     def test_utf8_header_boundary(self):
         self.add(1,body='é'*40000+'\nCOUNT=15');self.assertEqual(self.packet()['runs'][0]['assertions_status'],'PASS')
 

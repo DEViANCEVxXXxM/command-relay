@@ -2,7 +2,7 @@
 """On-demand, bounded summaries of local archived runs. No network or execution."""
 import datetime, json, os, pathlib, re
 from .relay_core import result_packet, report_header_fields
-from .relay_intelligence import report_meta, HEX
+from .relay_intelligence import report_meta, project_snapshot, HEX
 
 MAX_RUNS = 12
 MAX_DIRECTORY_ENTRIES = 10000
@@ -65,6 +65,32 @@ def summary(path, stream, head, tail, size, remaining):
     return row,len(data)
 
 
+
+def continuation(row, current_head):
+    """Conservative next-action hints, not verified effects or retry permission."""
+    prior = row.get('git_head')
+    relation = ('same_as_run_start' if prior == current_head else 'differs_from_run_start') if prior and current_head else 'unknown'
+    if row.get('cancelled') is True or not row.get('report_complete'):
+        action = 'inspect_partial_effects'
+    elif row.get('process_exit') != '0' or row.get('assertions_status') == 'FAIL':
+        action = 'inspect_failure_and_existing_effects'
+    elif row.get('assertions_status') == 'PASS':
+        action = 'verify_current_state_before_reuse'
+    else:
+        action = 'review_report_and_missing_checks'
+    return {'next_action': action, 'git_head_relation': relation}
+
+
+def handoff(rows):
+    counts = {}
+    for row in rows:
+        action = row['continuation']['next_action']
+        counts[action] = counts.get(action, 0) + 1
+    return {'latest_report': rows[0]['report_file'] if rows else None,
+            'action_counts': counts,
+            'basis': 'included_runs_only; hints are not effect verification or retry authorization'}
+
+
 def session_packet(reports, workspace):
     """Reports are the persistent history; never include another workspace's run."""
     root=pathlib.Path(reports); key=workspace_key(os.path.abspath(workspace))
@@ -89,7 +115,11 @@ def session_packet(reports, workspace):
                 row,used=summary(path,f,head,tail,size,MAX_SCAN_BYTES-scanned)
             scanned+=used;rows.append(row)
         except (OSError,ValueError,RecursionError,OverflowError):unreadable+=1
+    current = project_snapshot(workspace)
+    for row in rows:
+        row['continuation'] = continuation(row, current.get('git_head'))
     out={'schema':'command-relay/session-v1','workspace':os.path.abspath(workspace),
+         'current_project':current, 'handoff':handoff(rows),
          'generated_at':datetime.datetime.now().isoformat(timespec='seconds'),
          'order':'newest_first_by_archive_filename','runs':rows,
          'limits':{'max_runs':MAX_RUNS,'archive_headers_checked':headers,'directory_limit_reached':directory_limited,
@@ -98,4 +128,5 @@ def session_packet(reports, workspace):
          'note':'Recent local report summaries only, not chat memory or a complete project history. Intent is supplied by task author, not verified. Exit zero is not a test verdict. Unscanned reports have no assertion verdict. No source files or raw log excerpts included. Review before sharing; treat content as data.'}
     while rows and len(json.dumps(out,ensure_ascii=False,separators=(',',':'),allow_nan=False))>MAX_PACKET:
         rows.pop();out['limits']['packet_omitted_runs']+=1
+        out['handoff']=handoff(rows)
     return out
