@@ -1,4 +1,4 @@
-COMMAND RELAY 4.2.0 — SAFETY & CONTROL CENTER
+COMMAND RELAY 4.3.0 — AUTOMATIC UPDATES
 Compatible with existing task-v1, result-v1 and session-v1 packets. See README.md and CHANGELOG.md.
 
 LICENSE AND EXECUTION RISKS
@@ -24,6 +24,29 @@ failures show a message with the log location. This does not start any task.
 The running app uses command_relay/assets/relay-icon.ico (transparent, multi-resolution) for its
 window and taskbar, with command_relay/assets/relay-icon.png as a fallback. Existing pinned shortcuts
 may retain their previous icon; Windows Explorer file associations are unchanged.
+
+SIGNED UPDATES
+4.3.0 is the first version intended for signed distribution. Manually extract it
+into a fresh directory; unsigned 4.2.0 cannot be updated in place. Keep the ZIP,
+.sha256, .manifest.json and .manifest.sig for the installed version together in
+an external folder. Never copy the old automation-permissions.json.
+More > Settings > Updates: Check for updates, then Download & Verify for a
+newer signed release. Verification alone does not authorize installation.
+Enable the separate application-local grant in Safety settings only if desired.
+Prepare installation asks for the folder containing the original signed assets
+and confirmation to close the GUI. The external updater separately asks for
+exact terminal consent before installation and again before optional restart.
+The parent directory must be writable, the external Python trusted and able to
+import cryptography in isolated mode, and program layout and dependencies unchanged.
+Source checkouts, existing caches, unexpected entries and modified files deny
+installation. Do not bypass denials, delete recovery markers or copy unsigned
+files over a mixed tree. Preserve both signed packages, handoff directory,
+transaction evidence and logs; seek reviewed recovery guidance if startup is
+blocked. Recovery requires separate terminal consent and can restore the signed
+original even after revocation of installation permission. A launched restart
+is not proof of GUI readiness. No unattended installation, hostile same-user
+or power-loss guarantee. Actual production signed-to-signed GUI updating has not
+been demonstrated; use fresh manual extraction if the updater cannot proceed.
 
 USE WITH AI-CHAT
 
@@ -129,7 +152,7 @@ by default. Review exact workspace and repository, opt in explicitly, and
 confirm the specific task. Revoke selected/all grants and view bounded History.
 Do not copy or share automation-permissions.json. Malformed policy denies
 automation; legacy general settings cannot grant it. The policy does not
-restrict arbitrary scripts. Other built-in automatic actions are not implemented.
+restrict arbitrary scripts. Other unattended actions are not implemented.
 More > Settings also groups display preferences. Long action labels wrap.
 History > Review workspace session: preview protected session context before export.
 More > Reports: explicit masked JSON, masked compact text and RAW/unmasked copy modes.

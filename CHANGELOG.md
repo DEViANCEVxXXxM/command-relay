@@ -1,5 +1,15 @@
 # Changelog
 
+## 4.3.0 — Automatic Updates
+
+- Added explicit update discovery and signed-package download/verification in More > Settings > Updates. No background polling or unattended installation.
+- Added Ed25519 publisher authentication with a pinned public key, bounded download and archive validation, external updater preparation and isolated launch. SHA-256 alone is not publisher authentication.
+- Added default-denied application-local update permission, separate terminal confirmation, cooperative installation lock, transactional backup, rollback and startup recovery gate. Finalization preserves evidence outside the installation.
+- Added guarded restart after commit with separate consent; process launch does not establish GUI readiness.
+- Independent-process integration tests cover disposable signed install, interrupted replacement, recovery and inert restart. The pre-version-bump audit also opened and closed the actual extracted Qt workbench offscreen. Production signed-to-signed GUI updating is not yet demonstrated.
+- The first signed release requires manual extraction into a fresh directory. Keep the original four signed release assets for future update/recovery. Do not copy automation grants or overlay the old installation. Existing caches, unexpected program entries, modified files, changed dependencies or changed program layout are denied. Recovery may require manual intervention.
+- Task, result and session packet schemas remain unchanged; no sandbox, unattended update, expanded localization or parallel execution is introduced.
+
 ## 4.2.0 — Safety & Control Center
 
 - Built-in automatic squash merge now defaults to denied and requires explicit opt-in for the resolved workspace and exact GitHub repository, in addition to task review. Authorization is rechecked during CI waiting and immediately before the write; GitHub branch protection still applies.

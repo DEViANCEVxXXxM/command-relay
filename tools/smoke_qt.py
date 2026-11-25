@@ -94,8 +94,8 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
     from command_relay import relay_updates as updates
     import time
-    data = {'id': 1, 'tag_name': 'v4.3.0', 'draft': False, 'prerelease': False,
-            'assets': [{'id': i, 'name': 'command-relay-v4.3.0-windows' + ext,
+    data = {'id': 1, 'tag_name': 'v4.10.0', 'draft': False, 'prerelease': False,
+            'assets': [{'id': i, 'name': 'command-relay-v4.10.0-windows' + ext,
                         'state': 'uploaded', 'size': 64, 'digest': 'sha256:' + 'a' * 64}
                        for i, ext in enumerate(('.zip', '.sha256', '.manifest.json', '.manifest.sig'), 2)]}
     info = updates.parse_latest(data, VERSION)
