@@ -128,7 +128,7 @@ class SafetyDialog(QDialog):
 
     def __init__(self, workspace, parent=None):
         super().__init__(parent)
-        self.setWindowTitle('Safety settings'); self.resize(650, 390)
+        self.setWindowTitle('Safety settings'); self.resize(650, 490)
         self.workspace = workspace; self.scope = None; self.snapshot = None; self.busy = False
         self.completed.connect(self.finish_policy, Qt.ConnectionType.QueuedConnection)
         layout = QVBoxLayout(self)
@@ -136,12 +136,20 @@ class SafetyDialog(QDialog):
             widget = QLabel(text); widget.setWordWrap(True); widget.setTextFormat(Qt.TextFormat.PlainText)
             layout.addWidget(widget); return widget
         label('Automation permissions — disabled by default')
-        label('Only built-in automatic squash merge is available. Manual Run and manual merge remain separate. Arbitrary scripts are not sandboxed.')
+        label('Built-in merge and update installation permissions are separate. Manual Run and manual merge remain separate. Arbitrary scripts are not sandboxed.')
         self.target = label('Workspace: ' + workspace)
         self.notice = label('Refresh to read local policy and origin.')
         self.toggle = QCheckBox('Allow automatic squash merge for this workspace and repository')
         self.toggle.setAccessibleName('Allow scoped automatic squash merge'); layout.addWidget(self.toggle)
-        label('Every automatic merge still requires explicit task review. Other automation permissions are not implemented.')
+        label('Every automatic merge still requires explicit task review.')
+        self.update_target = label('Installation: ' + str(ROOT))
+        self.update_toggle = QCheckBox('Allow signed update installation for this application')
+        self.update_toggle.setAccessibleName('Allow installation of signed updates'); layout.addWidget(self.update_toggle)
+        label('Separate terminal confirmation is still required. No automatic download, install or restart from this setting.')
+        self.update_save_button = QPushButton('Apply update permission…')
+        self.update_save_button.setAutoDefault(False); self.update_save_button.clicked.connect(self.save_update)
+        layout.addWidget(self.update_save_button)
+        self.update_scope = None
         layout.addStretch()
         row = QHBoxLayout(); layout.addLayout(row)
         def button(text, fn):
@@ -156,6 +164,8 @@ class SafetyDialog(QDialog):
     def update_controls(self):
         self.toggle.setEnabled(not self.busy and self.scope is not None and self.snapshot is not None)
         self.save_button.setEnabled(self.toggle.isEnabled())
+        self.update_toggle.setEnabled(not self.busy and self.update_scope is not None and self.snapshot is not None)
+        self.update_save_button.setEnabled(self.update_toggle.isEnabled())
         self.revoke_button.setEnabled(not self.busy and self.snapshot is not None)
         self.history_button.setEnabled(not self.busy and self.snapshot is not None)
         self.refresh_button.setEnabled(not self.busy); self.close_button.setEnabled(not self.busy)
@@ -176,6 +186,12 @@ class SafetyDialog(QDialog):
         self.busy = False; self.scope = scope; self.snapshot = snapshot
         self.target.setText('Workspace: ' + (scope[0] if scope else self.workspace) + '\nRepository: ' + (scope[1] if scope else 'Not resolved'))
         self.toggle.setChecked(bool(scope and snapshot is not None and policy.allowed(snapshot, 'squash_merge', workspace=scope[0], repository=scope[1])))
+        self.update_scope = None
+        if snapshot is not None:
+            try: self.update_scope = policy.update_permission_scope(ROOT)
+            except Exception: pass
+        self.update_target.setText('Installation: ' + str(ROOT) + (' — eligible for permission changes' if self.update_scope else ' — update permission unavailable'))
+        self.update_toggle.setChecked(bool(snapshot is not None and policy.allowed(snapshot, 'update_install')))
         self.notice.setText(note); self.update_controls()
 
     def refresh(self):
@@ -214,6 +230,17 @@ class SafetyDialog(QDialog):
             updated = policy.save_merge_permission(snapshot, workspace=scope[0], repository=scope[1], enabled=enabled)
             return scope, updated, 'Permission saved. No commands or network writes executed.'
         self.start(work)
+
+    def save_update(self):
+        from . import relay_permissions as policy
+        if self.busy or self.update_scope is None or self.snapshot is None: return
+        root, snapshot, scope, enabled = self.update_scope, self.snapshot, self.scope, self.update_toggle.isChecked()
+        if enabled == policy.allowed(snapshot, 'update_install'):
+            self.notice.setText('No update permission change selected.'); return
+        if not self.confirm(('Allow' if enabled else 'Revoke') + ' signed update installation?\n\n' + str(root) + '\n\nInstallation still requires explicit terminal confirmation. No update will be executed now.'):
+            self.finish_policy(scope, snapshot, 'Cancelled. No changes made.'); return
+        self.start(lambda: (scope, policy.save_update_permission(snapshot, root=root, enabled=enabled),
+                           'Update permission saved. No update or network operation executed.'))
 
     def revoke_all(self):
         from . import relay_permissions as policy

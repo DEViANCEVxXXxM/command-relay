@@ -196,3 +196,83 @@ class PermissionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 p.revoke_all_permissions(grant)
             self.assertEqual(path.read_bytes(), before)
+
+
+class UpdatePermissionTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import patch
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name).resolve()
+        self.path = self.root / 'automation-permissions.json'
+        (self.root / 'Start.pyw').touch()
+        scope = patch.object(p, 'policy_path', return_value=self.path)
+        scope.start(); self.addCleanup(scope.stop)
+
+    def save(self, snapshot, enabled):
+        return p.save_update_permission(snapshot, root=self.root, enabled=enabled)
+
+    def test_default_grant_revoke_and_updater_reader(self):
+        from command_relay import relay_updates as u
+        with self.assertRaises(u.UpdateError): u._require_install_permission(self.root)
+        grant = self.save({}, True)
+        u._require_install_permission(self.root)
+        self.assertEqual(p.policy_snapshot(), grant)
+        self.assertEqual(self.save(grant, True), grant)
+        revoked = self.save(grant, False)
+        self.assertFalse(p.allowed(revoked, 'update_install'))
+        with self.assertRaises(u.UpdateError): u._require_install_permission(self.root)
+        self.assertEqual([e['operation'] for e in p.audit_history(revoked)['events']],
+                         ['grant_update_install', 'revoke_update_install'])
+        self.assertIn('this application installation', p.audit_text(revoked))
+
+    def test_preserves_merge_grant_and_revoke_all(self):
+        from unittest.mock import patch
+        with patch('command_relay.relay_github.workspace_repo', return_value='owner/repo'):
+            merge = p.save_merge_permission({}, workspace=self.root, repository='owner/repo', enabled=True)
+        both = self.save(merge, True)
+        self.assertTrue(p.allowed(both, 'squash_merge', workspace=self.root, repository='owner/repo'))
+        self.assertTrue(p.allowed(both, 'update_install'))
+        self.assertFalse(p.allowed(p.revoke_all_permissions(both), 'update_install'))
+
+    def test_stale_and_locked_policy_denied(self):
+        grant = self.save({}, True)
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError): self.save({}, False)
+        lock = self.path.with_name('.automation-permissions.lock'); lock.touch()
+        with self.assertRaises(FileExistsError): self.save(grant, False)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertTrue(lock.exists())
+
+    def test_wrong_root_checkout_and_pending_denied(self):
+        from command_relay import relay_updates as u
+        with self.assertRaises(ValueError): p.save_update_permission({}, root=self.root.parent, enabled=True)
+        git = self.root / '.git'; git.touch()
+        with self.assertRaises(ValueError): self.save({}, True)
+        git.unlink()
+        (self.root / u.UPDATE_TRANSACTION_NAME).mkdir()
+        with self.assertRaises(u.RecoveryRequired): self.save({}, True)
+        self.assertFalse(self.path.exists())
+
+    def test_linked_policy_denied(self):
+        from command_relay import relay_updates as u
+        import os
+        other = self.root / 'other.json'; other.write_text('{}')
+        try: os.link(other, self.path)
+        except OSError as exc: self.skipTest(str(exc))
+        with self.assertRaises(u.UpdateError): self.save({}, True)
+        self.assertEqual(other.read_text(), '{}')
+
+    def test_atomic_failure_and_invalid_audit(self):
+        from unittest.mock import patch
+        import json
+        grant = self.save({}, True); before = self.path.read_bytes()
+        with patch('command_relay.relay_core.atomic_text', side_effect=OSError('write failed')):
+            with self.assertRaises(OSError): self.save(grant, False)
+        self.assertEqual(self.path.read_bytes(), before)
+        grant[p.AUDIT_KEY]['events'][0]['count'] = 2
+        self.path.write_text(json.dumps(grant), encoding='utf-8')
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError): self.save(grant, False)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse(p.allowed(p.read_automation_settings(), 'update_install'))

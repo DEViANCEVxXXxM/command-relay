@@ -153,6 +153,31 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert 'revoke_all' in permissions.audit_text(dialog.snapshot)
         dialog.reject()
     print('Qt safety settings checks passed (default deny, cancel, opt-in, revoke; temporary policy only).')
+    # The application scope must not depend on a selected Git workspace.
+    with tempfile.TemporaryDirectory() as tmp:
+        install = Path(tmp).resolve()
+        (install / 'Start.pyw').touch()
+        with patch.object(relay_qt, 'ROOT', install), patch.object(permissions, 'policy_path', return_value=install/'automation-permissions.json'), \
+                patch('command_relay.relay_github.workspace_repo', side_effect=ValueError('no origin')):
+            dialog = relay_qt.SafetyDialog(str(install / 'unrelated-workspace'), window)
+            dialog.refresh(); wait_safety()
+            assert not dialog.toggle.isEnabled()
+            assert dialog.update_toggle.isEnabled() and not dialog.update_toggle.isChecked()
+            dialog.update_toggle.setChecked(True)
+            with patch.object(dialog, 'confirm', return_value=False): dialog.save_update()
+            assert not dialog.update_toggle.isChecked() and not permissions.policy_path().exists()
+            dialog.update_toggle.setChecked(True)
+            with patch.object(dialog, 'confirm', return_value=True): dialog.save_update(); wait_safety()
+            assert permissions.allowed(permissions.policy_snapshot(), 'update_install')
+            dialog.update_toggle.setChecked(False)
+            with patch.object(dialog, 'confirm', return_value=True): dialog.save_update(); wait_safety()
+            assert not permissions.allowed(permissions.policy_snapshot(), 'update_install')
+            assert [e['operation'] for e in permissions.audit_history(dialog.snapshot)['events']] == ['grant_update_install', 'revoke_update_install']
+            (install / '.git').touch()
+            dialog.refresh(); wait_safety()
+            assert not dialog.update_toggle.isEnabled()
+            dialog.reject()
+    print('Qt update permission checks passed (application scope, cancel, grant, revoke, source checkout denial; temporary policy only).')
     # Exercise the real pre-run gate without actually executing or journaling a command.
     with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
             patch.object(window, 'begin') as begin, patch.object(window, 'start_process') as start:
