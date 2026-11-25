@@ -309,3 +309,7 @@ Wait for Copied before pasting. Web Relay remains deferred.
 ### Version 4.0 — stability and responsiveness
 
 The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-looking malformed objects and unsupported JSON objects are rejected at import; provide a complete valid task packet instead of a fragment. Run identity is derived from the report header, not similarly named body lines. This is not authentication. The GUI tail is additionally bounded by text size (about 512,000 characters, smaller after trimming) and 6,000 blocks; the complete archived report is the evidence source. History metadata loads in a worker, and search uses the loaded snapshot. Refresh reloads it. The dialog lists up to 3,000 recent reports among at most 50,000 directory entries; a limit notice means older or unenumerated files remain available in More > Reports > Folder. During a requested export, wait for Copied before starting another run. No additional mandatory actions, dependency installations, internet requests or automatic clipboard writes. Web Relay is not implemented.
+
+### Accessible report export
+
+The main workbench keeps the existing Copy button and modifier shortcuts. More → Reports also exposes explicit AI result (masked), compact text (masked), and full report (RAW, unmasked) actions without modifier keys. Review any export before sharing; raw reports have no privacy masking. The editor, output, workspace and navigation controls have accessible names and visible keyboard focus.

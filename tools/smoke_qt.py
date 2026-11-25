@@ -51,6 +51,21 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert not window.running
     assert window.editor.toPlainText() == ''
     assert window.runbtn.isEnabled()
+    # Discoverable copy alternatives dispatch the same existing modes, without modifier keys.
+    assert window.cwd.accessibleName() == 'Working directory'
+    assert window.editor.accessibleName() == 'Command editor'
+    assert window.output.accessibleName() == 'Read-only terminal output'
+    assert window.find_previous.accessibleName() and window.find_next.accessibleName()
+    assert window.close_search.accessibleName()
+    assert 'RAW, unmasked' in window.copy_raw_action.text()
+    with patch.object(window, 'copy_report') as copy, patch.object(window, 'start_process') as start:
+        for action, mode in ((window.copy_ai_action, 'ai'), (window.copy_text_action, 'compact'),
+                             (window.copy_raw_action, 'full')):
+            action.trigger()
+            copy.assert_called_with(mode)
+        assert copy.call_count == 3
+        start.assert_not_called()
+    print('Qt workbench accessibility checks passed (named controls and explicit copy modes; no commands executed).')
     # Exercise the real pre-run gate without actually executing or journaling a command.
     with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
             patch.object(window, 'begin') as begin, patch.object(window, 'start_process') as start:
