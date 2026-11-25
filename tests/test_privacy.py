@@ -68,6 +68,34 @@ class PrivacyTests(unittest.TestCase):
     def test_inspector_high(self):
         for script in ('git reset --hard','Remove-Item -Recurse path','Invoke-Expression $text','Set-ExecutionPolicy Restricted'):
             self.assertEqual(inspect_script(script)['level'],'high',script)
+    def test_inspector_indirect_git(self):
+        for script, label in (
+            ("run('git', 'push', 'origin', BRANCH)", 'Network or remote Git operation'),
+            ('subprocess.run(["git", "commit", "-m", title])', 'File or repository changes'),
+            ("git('tag', '-a', tag)", 'File or repository changes'),
+            ('git tag -a v4.0.3', 'File or repository changes'),
+        ):
+            result=inspect_script(script)
+            self.assertEqual(result['level'],'review',script)
+            self.assertIn(label,[m['label'] for m in result['matches']])
+    def test_inspector_indirect_high(self):
+        for script in ("run('git', 'reset', '--hard')", 'subprocess.run(["git", "push", "--force-with-lease"])', "git('clean', '-fd')"):
+            self.assertEqual(inspect_script(script)['level'],'high',script)
+    def test_inspector_github_cli(self):
+        for script in ('gh pr create --title title', "gh('api', endpoint)", "run('gh.exe', 'issue', 'create')"):
+            result=inspect_script(script)
+            self.assertEqual(result['level'],'review',script)
+            self.assertIn('GitHub CLI operation',[m['label'] for m in result['matches']])
+    def test_inspector_external_process(self):
+        for script in ('subprocess.run(args, check=True)', 'subprocess.check_output(\n    args)', 'os.system(command)', 'Start-Process -FilePath tool'):
+            self.assertEqual(inspect_script(script)['level'],'review',script)
+        self.assertEqual(inspect_script('git status\ngh --version\n# subprocess.run(args)')['level'],'none')
+    def test_inspector_grouped_and_bounded(self):
+        result=inspect_script("git push origin main\nrun('git', 'push', branch)\n"*8)
+        matches=[m for m in result['matches'] if m['label']=='Network or remote Git operation']
+        self.assertEqual(len(matches),1)
+        self.assertEqual(matches[0]['lines'],[1,2,3,4,5])
+        self.assertNotIn('origin main',json.dumps(result))
     def test_inspector_bound(self):
         with patch('command_relay.relay_privacy.MAX_SCRIPT',1):
             self.assertTrue(inspect_script('abcdef')['scan_limited']);self.assertEqual(inspect_script('abcdef')['level'],'review')
