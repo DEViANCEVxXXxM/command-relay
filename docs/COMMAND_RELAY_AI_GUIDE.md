@@ -471,8 +471,16 @@ repeated. The normal Start.pyw and debug launcher avoid creating new Python
 bytecode caches; pre-existing caches and unexpected entries still cause denial.
 For direct diagnostic module launch prefer `python -B -m command_relay`.
 
-Automatic restart, production signing and real signed-release integration are
-not established. The GUI handoff is a development implementation awaiting
+After a successful standalone install commit, the terminal offers a separate
+`RESTART <target-version>` confirmation. Enter or EOF declines. The updater
+reacquires the installation lock, rejects pending recovery or unexpected entries,
+and verifies every target program file against the signed package before spawning
+the fixed `Start.pyw` entry point through isolated Python without a shell. It
+releases the lock before spawn so the new application can acquire its own lock.
+`restart_status=launched` (and `restart_performed=true`) means spawn accepted,
+not that the GUI became ready. Decline, interruption or spawn failure does not
+undo a committed update. Recovery does not offer restart. Production signing
+and real signed-release integration are not established. The GUI handoff is a development implementation awaiting
 end-to-end Windows acceptance, not proof that production self-update works.
 Existing tests use disposable trees, ephemeral keys and mocked network/GUI
 preparation or subprocess launch where applicable. The first signed-version

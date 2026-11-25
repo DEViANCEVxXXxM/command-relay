@@ -136,7 +136,12 @@ def check_latest(current=VERSION):
                 raise UpdateError('Unexpected release API response.')
             raw = response.read(MAX_RESPONSE + 1)
     except HTTPError as exc:
-        raise UpdateError(f'Release API HTTP error ({exc.code}).') from None
+        code = exc.code
+        try:
+            exc.close()
+        except OSError:
+            pass
+        raise UpdateError(f'Release API HTTP error ({code}).') from None
     except (URLError, OSError) as exc:
         raise UpdateError('Release API unavailable.') from None
     if len(raw) > MAX_RESPONSE:
@@ -205,7 +210,12 @@ def _download_asset(info, asset):
             # An extra byte detects oversized data without buffering unbounded responses.
             data = response.read(asset.size + 1)
     except HTTPError as exc:
-        raise UpdateError(f'Release asset HTTP error ({exc.code}).') from None
+        code = exc.code
+        try:
+            exc.close()
+        except OSError:
+            pass
+        raise UpdateError(f'Release asset HTTP error ({code}).') from None
     except (URLError, OSError, EOFError, HTTPException):
         raise UpdateError('Release asset unavailable.') from None
     if len(data) != asset.size:
@@ -1471,8 +1481,65 @@ def _run_local_transaction(root, original_folder, target_folder, target_version,
                 'evidence': str(evidence), 'restart_performed': False}
 
 
+def _restart_verified_installation(root, target_folder, target_version):
+    """Reauthenticate the committed tree, then spawn its fixed GUI entry point.
+
+    Spawn acknowledgement is not proof of a successful GUI startup. Never
+    reopen an incomplete transaction or execute an unverified launcher.
+    """
+    import os
+    import subprocess
+    import sys
+    root = Path(root)
+    with installation_lock(root):
+        _require_no_pending_transaction(root)
+        _check_transaction_layout(root)
+        target = load_local_signed_package(target_folder, target_version, current=VERSION)
+        for name, data in _verified_program_bytes(target).items():
+            if _read_recovery_file(root, name, MAX_MEMBER_BYTES) != data:
+                raise UpdateError('Restart tree differs from signed target.')
+        executable = Path(sys.executable)
+        if not executable.is_absolute():
+            raise UpdateError('Trusted Python executable unavailable.')
+        resolved = executable.resolve(strict=True)
+        code = Path(__file__).resolve().parent.parent
+        if not resolved.is_file() or any(
+                runtime.is_relative_to(folder.resolve(strict=True))
+                for runtime in (executable, resolved, Path(sys.prefix).resolve(strict=True))
+                for folder in (root, code)):
+            raise UpdateError('Restart requires Python outside installation and updater.')
+        bootstrap = ("import sys, runpy; from pathlib import Path; "
+                     "root = sys.argv.pop(1); sys.path.insert(0, root); "
+                     "runpy.run_path(str(Path(root) / 'Start.pyw'), run_name='__main__')")
+        argv = [str(executable), '-I', '-B', '-c', bootstrap, str(root)]
+    # The restarted application obtains its own startup lock. A competing
+    # cooperative process can win this gap; spawn is not startup confirmation.
+    return subprocess.Popen(argv, cwd=str(root), shell=False, close_fds=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+
+
+def _offer_committed_restart(root, target_folder, target_version):
+    """A separate opt-in after commit; never change the transaction outcome."""
+    import sys
+    try:
+        if not (sys.stdin is not None and sys.stderr is not None
+                and sys.stdin.isatty() and sys.stderr.isatty()):
+            return 'declined'
+        token = f'RESTART {target_version}'
+        print(f'Installation committed. Type {token!r} to launch the updated application, '
+              'or press Enter to finish:', file=sys.stderr, flush=True)
+        if sys.stdin.readline(128).rstrip('\r\n') != token:
+            return 'declined'
+        _restart_verified_installation(root, target_folder, target_version)
+        return 'launched'
+    except KeyboardInterrupt:
+        return 'interrupted'
+    except (UpdateError, OSError, ValueError):
+        return 'failed'
+
+
 def updater_main(argv=None):
-    """Standalone updater entry point (no Qt, restart or package execution)."""
+    """Standalone updater entry point; optional post-commit GUI launch."""
     import argparse
     import sys
     parser = argparse.ArgumentParser(description='Inspect or explicitly update a signed portable installation.')
@@ -1490,6 +1557,13 @@ def updater_main(argv=None):
             result = _run_local_transaction(args.root, args.original, args.target,
                                             args.target_version,
                                             action='install' if args.install else 'recover')
+            if result['outcome'] == 'commit':
+                result['restart_status'] = _offer_committed_restart(args.root, args.target, args.target_version)
+                result['restart_performed'] = result['restart_status'] == 'launched'
+                if result['restart_status'] in ('failed', 'interrupted'):
+                    print('Installation committed; restart not confirmed. Launch manually after checking the installation.', file=sys.stderr)
+            else:
+                result['restart_status'] = 'not_requested'
             print(json.dumps(result, sort_keys=True))
             return 0
         plan = inspect_local_installation(args.root, args.original, args.target, args.target_version)
