@@ -480,3 +480,105 @@ class SignedDownloadTests(unittest.TestCase):
         with self.assertRaisesRegex(u.UpdateError, 'digest differs'):
             u.download_signed_update(info)
         self.assertEqual(opener.return_value.open.call_count, 1)
+
+
+class StagingTests(unittest.TestCase):
+    def fixture(self, entries=None):
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        entries = entries if entries is not None else [
+            ('Start.pyw', b'never executed', 0o100644),
+            ('command_relay/relay_version.py', b'VERSION = "4.10.0"\n', 0o100644),
+            ('docs/manual.txt', b'guide', 0o100644)]
+        from dataclasses import replace
+        download = PackageTests().package(entries)
+        download = replace(download, info=replace(download.info, current=u.VERSION))
+        key = Ed25519PrivateKey.generate()
+        manifest = json.dumps({'schema': u.MANIFEST_SCHEMA, 'repository': u.REPOSITORY,
+            'version': download.info.latest, 'archive': {'name': download.info.archive.name,
+                'size': len(download.archive), 'sha256': download.sha256},
+            'files': {name: hashlib.sha256(data).hexdigest() for name, data, _ in entries}},
+            sort_keys=True).encode()
+        return u.SignedUpdate(download, manifest, key.sign(manifest)), key.public_key().public_bytes_raw()
+
+    def test_stage_exact_files_and_cleanup(self):
+        signed, key = self.fixture()
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key):
+            with u.stage_signed_update(signed) as stage:
+                self.assertEqual(stage.version, '4.10.0')
+                self.assertEqual(set(stage.files), set(json.loads(signed.manifest)['files']))
+                root = stage.directory
+                self.assertEqual({p.relative_to(root).as_posix() for p in root.rglob('*') if p.is_file()}, set(stage.files))
+                for name, digest in json.loads(signed.manifest)['files'].items():
+                    self.assertEqual(hashlib.sha256((root / name).read_bytes()).hexdigest(), digest)
+            self.assertFalse(root.exists())
+
+    def test_caller_exception_cleans_scratch(self):
+        signed, key = self.fixture()
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key), self.assertRaisesRegex(ValueError, 'consumer failure'):
+            with u.stage_signed_update(signed) as stage:
+                root = stage.directory
+                raise ValueError('consumer failure')
+        self.assertFalse(root.exists())
+
+    def test_bad_signature_before_disk(self):
+        from dataclasses import replace
+        signed, key = self.fixture()
+        bad = replace(signed, signature=b'0' * 64)
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key), patch('tempfile.TemporaryDirectory') as temp:
+            with self.assertRaises(u.UpdateError):
+                with u.stage_signed_update(bad):
+                    self.fail('unverified package staged')
+            temp.assert_not_called()
+
+    def test_wrong_running_version_before_disk(self):
+        from dataclasses import replace
+        signed, key = self.fixture()
+        bad = replace(signed, download=replace(signed.download, info=replace(signed.download.info, current='0.0.0')))
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key), patch('tempfile.TemporaryDirectory') as temp:
+            with self.assertRaisesRegex(u.UpdateError, 'running version'):
+                with u.stage_signed_update(bad):
+                    self.fail('wrong version staged')
+            temp.assert_not_called()
+
+    def test_signed_traversal_before_disk(self):
+        signed, key = self.fixture([('../settings.json', b'bad', 0o100644)])
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key), patch('tempfile.TemporaryDirectory') as temp:
+            with self.assertRaises(u.UpdateError):
+                with u.stage_signed_update(signed):
+                    self.fail('unsafe path staged')
+            temp.assert_not_called()
+
+    def test_write_failure_cleans_scratch(self):
+        import tempfile
+        from pathlib import Path
+        signed, key = self.fixture()
+        real_temp = tempfile.TemporaryDirectory
+        roots = []
+        def capture(*args, **kwargs):
+            temp = real_temp(*args, **kwargs)
+            roots.append(Path(temp.name))
+            return temp
+        original_open = Path.open
+        def fail_write(path, mode='r', *args, **kwargs):
+            if mode == 'xb' and path.name == 'manual.txt':
+                raise OSError('simulated disk error')
+            return original_open(path, mode, *args, **kwargs)
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', key), patch('tempfile.TemporaryDirectory', side_effect=capture), patch.object(Path, 'open', fail_write):
+            with self.assertRaisesRegex(u.UpdateError, 'Unable to stage'):
+                with u.stage_signed_update(signed):
+                    self.fail('partial package staged')
+        self.assertEqual(len(roots), 1)
+        self.assertFalse(roots[0].exists())
+
+    def test_independent_staging_does_not_touch_existing_files(self):
+        import tempfile
+        from pathlib import Path
+        signed, key = self.fixture()
+        with tempfile.TemporaryDirectory() as existing, patch.object(u, 'PUBLISHER_PUBLIC_KEY', key):
+            sentinel = Path(existing) / 'Start.pyw'
+            sentinel.write_bytes(b'current installation')
+            with u.stage_signed_update(signed) as first, u.stage_signed_update(signed) as second:
+                self.assertNotEqual(first.directory, second.directory)
+                self.assertNotEqual(first.directory, Path(existing))
+                self.assertEqual(sentinel.read_bytes(), b'current installation')
+            self.assertEqual(sentinel.read_bytes(), b'current installation')

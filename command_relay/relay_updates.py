@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Official release discovery and bounded integrity checks. Not an installer."""
+"""Official release discovery, authenticity checks and isolated staging. Not an installer."""
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 import hashlib
 from http.client import HTTPException
 import json
@@ -403,3 +405,58 @@ def download_signed_update(info):
     download = download_update(info)
     verify_publisher_package(download, manifest, signature)
     return SignedUpdate(download, manifest, signature)
+
+
+@dataclass(frozen=True)
+class StagedUpdate:
+    """Temporary inspection result, not authorization to replace program files."""
+    directory: Path  # valid only inside stage_signed_update context
+    version: str
+    files: tuple[str, ...]
+
+
+@contextmanager
+def stage_signed_update(signed):
+    """Reauthenticate and stage a newer package in a fresh temp directory.
+
+    Never accepts a destination supplied by a package or caller, never extracts
+    into an existing application tree, and never executes staged code. No
+    installation permission is granted. The directory is removed on context
+    exit, including exceptions. A hard process kill may leave scratch files.
+    Same-user concurrent modification is outside this boundary; reverify bytes
+    again before any future installation. No live installation exists yet.
+    """
+    import io
+    import tempfile
+    import zipfile
+
+    if (not isinstance(signed, SignedUpdate)
+            or not isinstance(signed.download, DownloadedUpdate)
+            or not isinstance(signed.download.info, UpdateInfo)
+            or signed.download.info.current != VERSION):
+        raise UpdateError('Expected signed update for the running version.')
+    download = signed.download
+    files = verify_publisher_package(download, signed.manifest, signed.signature)
+    expected = json.loads(signed.manifest.decode('utf-8'))['files']
+    prefix = f'command-relay-v{download.info.latest}-windows/'
+    with tempfile.TemporaryDirectory(prefix='command-relay-stage-') as scratch:
+        directory = Path(scratch)
+        try:
+            with zipfile.ZipFile(io.BytesIO(download.archive)) as archive:
+                for name in files:
+                    member = archive.getinfo(prefix + name)
+                    with archive.open(member) as stream:
+                        data = stream.read(member.file_size + 1)
+                    if (len(data) != member.file_size or
+                            hashlib.sha256(data).hexdigest() != expected[name]):
+                        raise UpdateError('Staged package content differs from manifest.')
+                    target = directory.joinpath(*name.split('/'))
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    with target.open('xb') as output:
+                        output.write(data)
+                    if (target.stat().st_size != len(data) or
+                            hashlib.sha256(target.read_bytes()).hexdigest() != expected[name]):
+                        raise UpdateError('Staged file readback differs from manifest.')
+        except (OSError, zipfile.BadZipFile, KeyError, EOFError) as exc:
+            raise UpdateError('Unable to stage verified update.') from None
+        yield StagedUpdate(directory, download.info.latest, files)
