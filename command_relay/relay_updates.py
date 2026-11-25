@@ -701,3 +701,122 @@ def rehearse_installation(installed, target):
             return InstallRehearsal(plan.current, plan.target, plan.replace, True)
     except OSError:
         raise UpdateError('Unable to prepare or clean rehearsal.') from None
+
+
+def _recovery_intent(installed, target, old, new):
+    """Immutable intent binds both authenticated manifests and the replacement set."""
+    return json.dumps({
+        'schema': 'command-relay/rehearsal-recovery-v1',
+        'current': installed.download.info.latest,
+        'target': target.download.info.latest,
+        'original_manifest_sha256': hashlib.sha256(installed.manifest).hexdigest(),
+        'target_manifest_sha256': hashlib.sha256(target.manifest).hexdigest(),
+        'replace': sorted(name for name in old if old[name] != new[name]),
+    }, sort_keys=True, separators=(',', ':')).encode('utf-8')
+
+
+def _recovery_packages(installed, target):
+    if not all(isinstance(item, SignedUpdate) and isinstance(item.download, DownloadedUpdate)
+               and isinstance(item.download.info, UpdateInfo) for item in (installed, target)):
+        raise UpdateError('Expected two signed packages.')
+    if installed.download.info.latest != VERSION or target.download.info.current != VERSION:
+        raise UpdateError('Recovery packages differ from the running version.')
+    old, new = _verified_program_bytes(installed), _verified_program_bytes(target)
+    return old, new, _recovery_intent(installed, target, old, new)
+
+
+def _prepare_recovery_rehearsal(base, installed, target):
+    """Private helper for a freshly allocated disposable directory only."""
+    old, new, intent = _recovery_packages(installed, target)
+    _checked_path(base, directory=True)
+    if any(base.iterdir()):
+        raise UpdateError('Recovery rehearsal directory is not empty.')
+    root, backup, incoming = (base / name for name in ('portable', 'backup', 'incoming'))
+    for folder in (root, backup, incoming):
+        folder.mkdir()
+    for name, data in old.items():
+        _write_rehearsal_file(root / name, data)
+    plan = plan_installation(root, installed, target)
+    for name in plan.replace:
+        _write_rehearsal_file(backup / name, old[name])
+        _write_rehearsal_file(incoming / name, new[name])
+    # Flush the complete intent file before allowing any replacement. Directory
+    # entry durability on Windows/power loss is not established by this test.
+    _write_rehearsal_file(base / 'intent.json', intent)
+    return plan
+
+
+def _read_recovery_file(base, relative, limit):
+    """Reject links, junctions, ambiguous names and oversized files."""
+    path = base
+    _checked_path(path, directory=True)
+    parts = relative.split('/')
+    for i, part in enumerate(parts):
+        if [p.name for p in path.iterdir() if p.name.casefold() == part.casefold()] != [part]:
+            raise UpdateError('Missing or ambiguous recovery path.')
+        path = path / part
+        info = _checked_path(path, directory=i < len(parts) - 1)
+    if info.st_size > limit:
+        raise UpdateError('Recovery file exceeds size limit.')
+    with path.open('rb') as source:
+        data = source.read(limit + 1)
+    if len(data) != info.st_size or len(data) > limit:
+        raise UpdateError('Recovery file size changed.')
+    return data
+
+
+def _recover_rehearsal(base, installed, target):
+    """Reconstruct rollback from disk, not an in-memory progress counter.
+
+    Internal disposable-tree prototype. Requires both original signed packages
+    again. The immutable intent is retained for idempotent retries. No live
+    destination, process exclusion, or power-loss guarantee.
+    """
+    old, new, intent = _recovery_packages(installed, target)
+    try:
+        if _read_recovery_file(base, 'intent.json', len(intent)) != intent:
+            raise UpdateError('Recovery intent differs from signed packages.')
+        # Preflight the entire tree and every required backup before any write.
+        pending = []
+        for name in sorted(old):
+            actual = _read_recovery_file(base, 'portable/' + name, MAX_MEMBER_BYTES)
+            if actual == old[name]:
+                continue
+            if actual != new[name]:
+                raise UpdateError('Unknown recovery file state.')
+            if _read_recovery_file(base, 'backup/' + name, MAX_MEMBER_BYTES) != old[name]:
+                raise UpdateError('Recovery backup differs from signed original.')
+            pending.append(name)
+        for name in reversed(pending):
+            _replace_rehearsal_file(base / 'backup' / name, base / 'portable' / name,
+                                    new[name], old[name])
+        for name, data in old.items():
+            if _read_recovery_file(base, 'portable/' + name, MAX_MEMBER_BYTES) != data:
+                raise UpdateError('Recovery original tree differs.')
+        return tuple(pending)
+    except OSError:
+        raise UpdateError('Recovery interrupted or unavailable; retry requires verification.') from None
+
+
+def rehearse_interrupted_installation(installed, target):
+    """Simulate interruption after one replacement, then independently recover.
+
+    The scratch tree is always disposable. No production destination argument.
+    The simulation does not kill an OS process or establish power-loss safety.
+    """
+    import tempfile
+    old, new, _ = _recovery_packages(installed, target)
+    try:
+        with tempfile.TemporaryDirectory(prefix='command-relay-recovery-') as scratch:
+            base = Path(scratch).resolve()
+            plan = _prepare_recovery_rehearsal(base, installed, target)
+            if plan.replace:
+                name = plan.replace[0]
+                _replace_rehearsal_file(base / 'incoming' / name, base / 'portable' / name,
+                                        old[name], new[name])
+            restored = _recover_rehearsal(base, installed, target)
+            if restored != plan.replace[:1] or _recover_rehearsal(base, installed, target):
+                raise UpdateError('Recovery rehearsal was not idempotent.')
+            return InstallRehearsal(plan.current, plan.target, restored, True)
+    except OSError:
+        raise UpdateError('Unable to complete recovery rehearsal.') from None
