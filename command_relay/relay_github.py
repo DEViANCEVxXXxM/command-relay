@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Optional GitHub CLI integration; no shell, token handling or automatic writes."""
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 import json
 import os
 from pathlib import Path
@@ -126,6 +126,34 @@ def parse_pr(repo, number, data, repo_data):
                        tuple(dict.fromkeys(blockers)))
 
 
+def workspace_repo(workspace):
+    """Read a single explicit GitHub origin without exposing credentials."""
+    try:
+        result = subprocess.run(['git', '-C', str(workspace), 'config', '--get-all', 'remote.origin.url'],
+                                capture_output=True, encoding='utf-8', timeout=5, shell=False)
+        lines = result.stdout.splitlines()
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        raise GitHubError('Could not read workspace origin; enter owner/repository.') from None
+    if result.returncode or len(lines) != 1:
+        raise GitHubError('Expected one GitHub origin; enter owner/repository.')
+    match = re.fullmatch(r'(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?/?', lines[0], re.I)
+    if not match:
+        raise GitHubError('Origin is not a supported GitHub URL; enter owner/repository.')
+    return _repo(match.group(1))
+
+
+def status_packet(pr, observed_at, *, merge_sha=None, outcome='observed'):
+    """Bounded export, never include CLI output, credentials or workspace paths."""
+    from .relay_privacy import protect_packet
+    if merge_sha is not None:
+        _sha(merge_sha)
+    return protect_packet({'schema': 'command-relay/github-pr-status-v1',
+                           'observed_at_utc': observed_at, 'pr': {**asdict(pr), 'checks': [asdict(c) for c in pr.checks], 'blockers': list(pr.blockers)},
+                           'ready_at_observation': pr.ready, 'merge_outcome': outcome,
+                           'verified_merge_sha': merge_sha,
+                           'note': 'Snapshot only; server rules apply. Review before sharing.'})
+
+
 class GitHubClient:
     def __init__(self, repo):
         self.repo = _repo(repo)
@@ -154,6 +182,17 @@ class GitHubClient:
         args = ['api', '--hostname', 'github.com', '--method', method, 'repos/' + self.repo + suffix]
         if payload is not None: args += ['--input', '-']
         return self._json(*args, payload=payload)
+
+    def list_open(self):
+        rows = self._json('pr', 'list', '--repo', 'github.com/' + self.repo, '--state', 'open',
+                          '--limit', '100', '--json', 'number,title')
+        if not isinstance(rows, list) or len(rows) > 100:
+            raise GitHubError('Unexpected pull request list.')
+        result = tuple((_number(r.get('number')), _label(r.get('title'), 500))
+                       for r in rows if isinstance(r, dict))
+        if len(result) != len(rows) or len({n for n, _ in result}) != len(result):
+            raise GitHubError('Malformed pull request list.')
+        return result
 
     def inspect(self, number):
         _number(number)
