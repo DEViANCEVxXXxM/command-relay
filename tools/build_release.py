@@ -29,6 +29,7 @@ RELEASE_FILES = (
     'command_relay/relay_core.py',
     'command_relay/relay_export.py',
     'command_relay/relay_features.py',
+    'command_relay/relay_github.py',
     'command_relay/relay_intelligence.py',
     'command_relay/relay_privacy.py',
     'command_relay/relay_qt.py',
