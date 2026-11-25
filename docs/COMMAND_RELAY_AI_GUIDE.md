@@ -58,6 +58,100 @@ Add this field at the top level of a task packet when there are meaningful check
 
 The example is a field fragment, not a complete task. Use a signed 32-bit integer for exit_code and at most 16 metric checks. `equals` accepts JSON scalar values only (finite numbers, exact integers within ±(2^53−1), booleans, null, or strings of up to 256 characters). Types match strictly: `true`, `1`, and `1.0` differ. Keys are case-sensitive; use standalone uppercase `KEY=value` output (at least 3 characters) or top-level fields of single-line JSON objects. Compound rows are not split into separate fields. The default occurrence is `all`; explicitly use `last` only when the final observation is intended. Checks span the report body, not a selected stage. With metrics but no exit_code, zero is required. Avoid asserting a constant that the script merely prints regardless of actual outcomes. Encode real checks, skips, and errors in the script. Do not request the user to fill these fields manually.
 
+### Designing safe retries and recoverable tasks (4.1 development)
+
+A task is not a transaction. Exit failure, Stop, timeout, or a lost response does
+not undo completed file changes, commits, API writes, or publications. Design
+mutating tasks around explicit preconditions and verified postconditions, not
+around the assumption that every invocation starts from a pristine workspace.
+
+- **Preflight:** pin the intended workspace/repository, current revision, target
+  files and expected hashes or resource identities. Check prerequisites before
+  writes. Never reset, overwrite, force-push or delete unexpected state to make
+  a preflight pass.
+- **Apply:** use the smallest explicit mutation, check the return code, then
+  verify its effect by reading the actual state. Keep a stable identity for
+  resources that must not be duplicated (for example, a feature branch and PR
+  number). Emit meaningful stage markers only after their checks succeed.
+- **Resume:** distinguish the initial state, exact intended final state,
+  verifiable intermediate state, and conflicts. A rerunnable task may skip an
+  already verified effect, but must verify all remaining acceptance criteria.
+  A task that is deliberately single-use must say so and stop on changed state.
+- **Report:** include verified resource IDs, commit hashes or artifact hashes,
+  completed stages, and the next unresolved stage. A failed final assertion
+  can coexist with successful earlier mutations. Never treat missing evidence
+  as proof that an operation did not occur.
+
+Examples of retry decisions (read-only inspection first):
+
+| Observed state | Safe action |
+| --- | --- |
+| File hash equals the reviewed original; no unexpected changes | Apply the reviewed patch and verify its resulting hash. |
+| File hash equals the reviewed result | Do not apply the patch again; verify other acceptance criteria. |
+| Some files already match the result, others match the original | Inspect the entire changed set; resume only explicitly supported steps, or prepare a new reviewed repair task. |
+| A file has a third hash, or the target revision differs | Stop; request the current diff or a new reviewed baseline. |
+| A PR creation request failed or timed out | Read the exact repository and branch/PR identity; verify any existing PR before considering creation. |
+| A merge response was lost or an audit failed after a merge | Read the PR by number and verify merge SHA, ancestry and resulting tree; do not issue another merge blindly. |
+
+For a retryable one-file operation, the following is illustrative decision logic,
+not an executable script. Derive the state from the actual file bytes and
+preflight checks; do not substitute these labels for real hash checks.
+
+```text
+if current_hash == expected_result_hash:
+    verify_postconditions_without_writing()
+else if current_hash == expected_original_hash:
+    apply_reviewed_patch_once()
+    verify_postconditions()
+else:
+    stop_and_report_conflict()
+```
+
+Reuse an exact task ID, script and assertions only for an intentionally repeated
+measurement or a task explicitly designed for that retry. For changed scripts,
+use a new ID or revision suffix. A read-only verification or repair task should
+have its own ID and refer to the prior report or resource identifiers. Do not
+rerun a mutating task merely to make its previous FAIL become PASS. The repeat
+confirmation available in 4.1 development uses bounded lexical history;
+absence of a match is not proof of a first run, and confirmation does not make
+an unsafe retry safe.
+
+### GitHub workflows with optional task-level automation (4.1 development)
+
+When supported by the installed version, `More → Git → GitHub pull requests…`
+can inspect PRs and request an explicit squash merge. GitHub CLI (`gh`) is
+optional and must already be available and authorized. Diagnose missing PATH or
+permissions without requesting credentials. Never print tokens or automatically
+install or authorize tools as part of an unrelated task.
+
+A reviewed task may also use `command_relay.relay_github.GitHubClient` from a
+compatible local Command Relay source checkout to wait for CI and request a
+single squash merge. This is a Python helper, not a new task schema or a
+built-in PowerShell directive. Confirm availability and API compatibility first.
+The task must disclose commit, push, PR creation and merge separately; explicitly
+identify the repository, target branch, expected base SHA, reviewed head SHA (or
+how it is derived from the verified candidate), exact PR identity and required
+check names. Obtain agreement before Run; authorization is limited to that task
+and those effects. Never infer permission to merge from the presence of a PR or
+from an earlier task.
+
+Use `wait_and_merge` with an explicit confirmation flag only after those checks
+and the user's review. Choose a finite polling budget and interval (the current
+helper accepts 30–1800 seconds and 5–60 seconds respectively). All explicitly
+required checks must succeed; missing/failed checks, stale identities, blocking
+reviews and server denials prevent the merge. The helper does not authorize
+admin bypass, force push, branch deletion or release publication. GitHub server
+rules remain authoritative. HEAD SHA is bound by the merge API; BASE SHA is
+revalidated before the request, not atomically pinned by that API. Verify the
+result independently, including the expected tree and ancestry where relevant.
+If CI fails, the deadline expires or a write outcome is unknown, stop and
+report the existing PR; do not retry a merge automatically. Branch cleanup
+remains a separate reviewed operation or GitHub's configured automatic cleanup.
+
+These practices retain `command-relay/task-v1` and `result-v1`. Do not invent
+new executable fields or auto-run tasks on import. The user remains in control
+of execution even when one reviewed task contains the entire workflow.
+
 ## 4. PowerShell and output conventions
 
 - The application invokes `powershell.exe -NoLogo -NoProfile -NonInteractive -File ...`. Target Windows PowerShell 5.1 rather than PowerShell 7 syntax. Do not depend on user profiles, interactive input, or variables surviving between runs. All stages within a single task share one session.
