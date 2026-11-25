@@ -460,3 +460,125 @@ def stage_signed_update(signed):
         except (OSError, zipfile.BadZipFile, KeyError, EOFError) as exc:
             raise UpdateError('Unable to stage verified update.') from None
         yield StagedUpdate(directory, download.info.latest, files)
+
+
+# First managed layout: exact portable program files, never user data.
+# Future layout changes require a separately reviewed migration.
+INSTALL_PROGRAM_FILES = frozenset((
+    'CHANGELOG.md',
+    'CONTRIBUTING.md',
+    'DISCLAIMER.md',
+    'LICENSE',
+    'NOTICE',
+    'README.md',
+    'SECURITY.md',
+    'Start.cmd',
+    'Start.pyw',
+    'command_relay/__init__.py',
+    'command_relay/__main__.py',
+    'command_relay/assets/relay-icon.ico',
+    'command_relay/assets/relay-icon.png',
+    'command_relay/relay_compare.py',
+    'command_relay/relay_core.py',
+    'command_relay/relay_export.py',
+    'command_relay/relay_features.py',
+    'command_relay/relay_github.py',
+    'command_relay/relay_github_qt.py',
+    'command_relay/relay_intelligence.py',
+    'command_relay/relay_permissions.py',
+    'command_relay/relay_privacy.py',
+    'command_relay/relay_qt.py',
+    'command_relay/relay_session.py',
+    'command_relay/relay_terms.py',
+    'command_relay/relay_updates.py',
+    'command_relay/relay_version.py',
+    'command_relay/relay_view.py',
+    'command_relay/relay_windows.py',
+    'docs/COMMAND_RELAY_AI_GUIDE.md',
+    'docs/architecture.md',
+    'docs/disclaimer.md',
+    'docs/github-setup.md',
+    'docs/manual.txt',
+    'examples/example-ai-task.json',
+    'examples/example-privacy-task.json',
+    'examples/example.txt',
+    'requirements.txt',
+    'tools/Start-Debug.cmd',
+))
+
+
+@dataclass(frozen=True)
+class InstallPlan:
+    """Read-only evidence, not installation authorization or a filesystem lock."""
+    root: Path
+    current: str
+    target: str
+    replace: tuple[str, ...]
+    unchanged: tuple[str, ...]
+
+
+def _checked_path(path, *, directory):
+    import stat
+    info = path.lstat()
+    if (stat.S_ISLNK(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            or (directory and not stat.S_ISDIR(info.st_mode))
+            or (not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1))):
+        raise UpdateError('Unsafe installation path type.')
+    return info
+
+
+def plan_installation(root, installed, target):
+    """Authenticate old and new packages and read the exact existing program files.
+
+    No writes, permission grants, process locks, or execution. Requires the
+    original signed package for the running version. Unsigned legacy installs
+    and changes to the program file layout need a separately reviewed migration.
+    Other user files are not traversed or modified. Same-user concurrent changes
+    are outside this check; a future installer must revalidate before writes.
+    """
+    if not all(isinstance(item, SignedUpdate) and isinstance(item.download, DownloadedUpdate)
+               and isinstance(item.download.info, UpdateInfo) for item in (installed, target)):
+        raise UpdateError('Expected two signed packages.')
+    if installed.download.info.latest != VERSION or target.download.info.current != VERSION:
+        raise UpdateError('Installation packages differ from the running version.')
+    old_files, new_files = (verify_publisher_package(item.download, item.manifest, item.signature)
+                            for item in (installed, target))
+    if set(old_files) != INSTALL_PROGRAM_FILES or set(new_files) != INSTALL_PROGRAM_FILES:
+        raise UpdateError('Unsupported managed program file layout.')
+    old_hashes = json.loads(installed.manifest.decode('utf-8'))['files']
+    new_hashes = json.loads(target.manifest.decode('utf-8'))['files']
+    try:
+        root = Path(root)
+        if not root.is_absolute() or '..' in root.parts or root.parent == root:
+            raise UpdateError('Expected an absolute non-root installation directory.')
+        for parent in (*reversed(root.parents), root):
+            _checked_path(parent, directory=True)
+            try:
+                (parent / '.git').lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                raise UpdateError('Git checkout cannot be updated.')
+        for name in sorted(old_hashes):
+            path = root
+            parts = name.split('/')
+            for i, part in enumerate(parts):
+                matches = [entry.name for entry in path.iterdir() if entry.name.casefold() == part.casefold()]
+                if matches != [part]:
+                    raise UpdateError('Missing or ambiguous installed program path.')
+                path = path / part
+                info = _checked_path(path, directory=i < len(parts)-1)
+            if info.st_size > MAX_MEMBER_BYTES:
+                raise UpdateError('Installed program file exceeds size limit.')
+            with path.open('rb') as source:
+                data = source.read(MAX_MEMBER_BYTES + 1)
+            if len(data) != info.st_size or hashlib.sha256(data).hexdigest() != old_hashes[name]:
+                raise UpdateError('Installed program file differs from signed package.')
+    except (OSError, TypeError, ValueError) as exc:
+        if isinstance(exc, UpdateError):
+            raise
+        raise UpdateError('Unable to inspect installation directory.') from None
+    changed = tuple(name for name in sorted(old_hashes) if old_hashes[name] != new_hashes[name])
+    unchanged = tuple(name for name in sorted(old_hashes) if old_hashes[name] == new_hashes[name])
+    return InstallPlan(root, VERSION, target.download.info.latest, changed, unchanged)
