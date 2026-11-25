@@ -1549,3 +1549,42 @@ class ReleasePresentationTests(unittest.TestCase):
     def test_invalid_input(self):
         with self.assertRaises(u.UpdateError):
             u.describe_release(None)
+
+
+class VerifyDisplayTests(unittest.TestCase):
+    def test_eligible_only_for_valid_newer_signed_metadata(self):
+        from dataclasses import replace
+        info, _, _ = SignedDownloadTests().fixture()
+        with patch.object(u, 'build_opener') as opener:
+            self.assertTrue(u.can_verify_release(info))
+            for bad in (None, replace(info, current=info.latest),
+                        replace(info, current='999.0.0'), replace(info, manifest=None),
+                        replace(info, signature=replace(info.signature, size=63)),
+                        replace(info, archive=replace(info.archive, digest=None)),
+                        replace(info, signature=replace(info.signature, asset_id=info.archive.asset_id))):
+                self.assertFalse(u.can_verify_release(bad))
+            opener.assert_not_called()
+
+    @patch.object(u, 'build_opener')
+    def test_display_digest_only_after_full_authentication(self, opener):
+        info, contents, pub = SignedDownloadTests().fixture()
+        opener.return_value.open.side_effect = [AssetResponse(b) for b in contents]
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', pub):
+            self.assertEqual(u.verify_release_for_display(info), hashlib.sha256(contents[-1]).hexdigest())
+        self.assertEqual(opener.return_value.open.call_count, 4)
+
+    @patch.object(u, 'build_opener')
+    def test_invalid_signature_never_returns_display_digest(self, opener):
+        info, contents, pub = SignedDownloadTests().fixture(alter_signature=True)
+        opener.return_value.open.side_effect = [AssetResponse(b) for b in contents]
+        with patch.object(u, 'PUBLISHER_PUBLIC_KEY', pub), self.assertRaises(u.UpdateError):
+            u.verify_release_for_display(info)
+
+    @patch.object(u, 'build_opener')
+    def test_unsigned_and_equal_rejected_before_network(self, opener):
+        from dataclasses import replace
+        info, _, _ = SignedDownloadTests().fixture()
+        for bad in (replace(info, signature=None), replace(info, current=info.latest)):
+            with self.assertRaises(u.UpdateError):
+                u.verify_release_for_display(bad)
+        opener.assert_not_called()
