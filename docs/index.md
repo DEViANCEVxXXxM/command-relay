@@ -32,6 +32,19 @@ layout: relay-home
 - Local evidence archives, comparisons and Git context tools.
 - No mandatory AI API key, account, telemetry or cloud connection. Commands can access the network if you run such commands.
 
+## Upcoming 4.4.0 — Unified Experience Update
+
+Integration candidate; not a published release.
+
+- One full-width workbench with top navigation, a resizable command editor and terminal, and optional bottom utilities. Ordinary manual Run needs no second confirmation; high-risk and failed/uncertain repeat review remains.
+- Reviewed dependency-aware task batches: explicit workspaces, sequential by default, opt-in bounded parallel workers for independent tasks. No sandbox or unattended arbitrary PowerShell.
+- Personal Skills, bounded read-only metadata plans, runtime diagnostics, recent reports and structured session handoff.
+- Optional off-record AI Chat (Qt WebEngine), reviewed same-origin JSON import and masked draft insertion into a supported empty textarea. No automatic Send, provider API requirement or guaranteed provider compatibility.
+- Smart masked JSON, Detailed masked JSON, protected text and unmasked RAW export. Plain click = Smart; Shift+click = protected text; Ctrl+click = RAW (Ctrl wins). Review exports before sharing.
+- 17 selectable interface languages: English/Russian and 15 translation previews; Arabic RTL chrome, LTR commands, paths and reports. Preview translations are not independently certified.
+
+See the manual for usage and limitations.
+
 ## Automatic Updates — 4.3.0
 
 - Manual release discovery, Ed25519 package verification and explicitly confirmed external updater.
@@ -44,7 +57,7 @@ layout: relay-home
 - Local safety settings, revocation and bounded permission history.
 - Consolidated settings and adaptive action rows for long labels and RTL.
 
-Arbitrary reviewed scripts remain outside the policy boundary. Other unattended actions and expanded localization are not implemented.
+Arbitrary reviewed scripts remain outside the policy boundary. Other unattended actions were not implemented in 4.2.0; reviewed batches and language previews are in the upcoming candidate.
 
 ## Workflow Intelligence — 4.1.0
 

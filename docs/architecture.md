@@ -42,7 +42,7 @@ The full technical workbench is the only workspace. Navigation, editor, inspecto
 
 AI Chat opens a lazy Qt WebEngine dock using the already installed PySide6 runtime; the normal startup does not import WebEngine. Its off-the-record profile does not persist browser credentials as a Relay profile. Enter an explicit HTTPS (or loopback HTTP) provider address. Authentication redirects may work; popups, local file selection, unknown schemes, browser permissions and certificate exceptions are denied. There is no JavaScript-to-native execution bridge. A provider may be incompatible; use the external browser and clipboard instead.
 
-A same-origin JSON download (including a same-origin blob URL) is captured into a uniquely named system temporary directory, never Downloads. Only one transfer or pending task is accepted at a time; known oversize downloads are rejected, progress is monitored and final reads are bounded to 1 MB. Transfer completion validates task-v1 or batch-v1; the user must explicitly import into existing review. Navigation invalidates the pending task and cancels an active transfer. No task runs on download or review. The runtime does not promise strict disk quotas during a transfer or cleanup after an abnormal process termination. Return uses the existing masked AI export and manual clipboard paste/send; automatic DOM submission, persisted provider profiles and authenticated provider compatibility remain future work.
+A same-origin JSON download (including a same-origin blob URL) is captured into a uniquely named system temporary directory, never Downloads. Only one transfer or pending task is accepted at a time; known oversize downloads are rejected, progress is monitored and final reads are bounded to 1 MB. Transfer completion validates task-v1 or batch-v1; the user must explicitly import into existing review. Navigation invalidates the pending task and cancels an active transfer. No task runs on download or review. The runtime does not promise strict disk quotas during a transfer or cleanup after an abnormal process termination. Return uses the existing masked AI export and manual clipboard paste/send or explicit reviewed draft insertion described below. Automatic DOM submission, persisted provider profiles and authenticated provider compatibility remain unsupported or unverified.
 
 Browser shutdown explicitly destroys the view/page before the off-record profile, while Qt is alive. Renderer termination discards pending imports and offers external-browser fallback. The offscreen acceptance test uses software Chromium rendering; it does not establish hardware-rendering compatibility.
 
@@ -58,14 +58,9 @@ Smart export compacts only recognized verbose success runs after evaluating full
 
 Recent reports are available on the History tab of the on-demand bottom utility dock, derived on demand from the existing bounded workspace session archive. The archive is the durable source of truth. No scan is required at startup; stale workspace results are discarded.
 
-### Remaining Experience Blueprint v3 acceptance gaps (checkpoint 115)
+### Remaining acceptance and scope limits
 
-- Full visual and DPI acceptance, durable conversation-linked session identifiers and unified single/batch queue are pending. Existing shared controls and the modal batch review remain.
-- Browser authentication and public-provider compatibility, isolated persistent profiles, direct result insertion/upload and delivery receipts are not yet established. Clipboard fallback is the supported return path; no API requirement.
-- Safety Gate is a bounded lexical pre-launch review, not an OS sandbox or runtime interceptor. Unrestricted autonomous PowerShell is not supported. A technically constrained operation catalog or isolated executor is required before enabling autonomy.
-- Personal Skills are declarative and independent of the release; migration of legacy settings, provider storage and arbitrary executable extensions are not implemented.
-- EN/RU catalogs are enabled; the other 15 planned locales are not complete. Smart export currently targets conventional verbose unittest lines, not arbitrary log formats. Diagnostics are read-only; PATH refresh, crash-resume and performance budgets remain open.
-- Final regression, public-provider acceptance, official signed installation/update from v4.3.0 and visual QA remain release gates. The updater's 39 managed paths are unchanged.
+Grand QA 123 verified 479 tests without skips on Windows and Linux, synthetic 17-locale layout at three scale factors, sampled native glyphs, disposable native batch, loopback browser and deterministic unsigned 39-file archive. Real provider authentication, actual native visual/DPI, independent translation/legal review and production signed-to-signed update remain open. No durable conversation-linked identity, generic contenteditable, delivery receipt, unrestricted autonomous execution, legacy data relocation, executable plugins, automatic PATH refresh or crash-resume guarantee is provided.
 
 ### Reviewed browser draft insertion
 
@@ -95,49 +90,13 @@ Use short action verbs and sentence-case UI copy. Canonical terminology: workspa
 The legacy AI context chooser, local-tool titles and completion/error messages, export mode presentation, file filters and close/update messages now use EN/RU catalog IDs. The source-level guard covers the context chooser, not every widget. Raw process output, user text, exception details, external provider UI and OS/native standard controls are not translated by this catalog. Full language acceptance includes a human review of remaining dialogs and native controls; do not infer it from catalog parity.
 
 
-### Global localization — draft stage (historical checkpoints 121–121g)
+### Localization and visual acceptance
 
-The following draft-stage paragraphs describe earlier checkpoints, not current availability; see the preview activation section below.
+The single workspace retains 528 active UI keys per locale. English and Russian are canonical; 15 additional selectable locales are explicitly labelled previews. Each preview notice includes all six translated paragraphs and the original English source. Format-field parity and notice source digests do not constitute linguistic/legal approval. Arabic chrome and dialogs use RTL; commands, paths and report editors remain LTR. Raw output, user text, external provider UI and OS-native controls remain outside catalog coverage.
 
-The 120c English/Russian catalogs are the canonical source (565 IDs at this checkpoint). The first global-language draft covers 47 IDs in each of the 15 additional registry locales, including the shell, navigation, main actions and presentation verdicts. Drafts are deliberately separate from `_MESSAGES`, and are not loaded by `tr` or offered in startup/settings. The coverage validator checks known keys, nonempty values and exact format parameter multiplicity, format specifications and conversions. Coverage is not evidence of translation quality. The legal notice remains exactly the existing bilingual text.
+The former mode chooser, Casual dashboard and persistent sidebar are removed. Legacy mode/sidebar settings are discarded without changing other preferences. The optional bottom utility dock is closed by default. Layout tokens use 16 px outer margins, 12 px section gaps, 8 px control gaps, aligned rows and shared pane header heights. System fonts and fallback shaping are sampled; no fonts are shipped.
 
-Before activation, finish all missing IDs, perform linguistic review of the entire catalog (especially permission, privacy, risk and recovery), provide and review a complete notice per language, validate script coverage and native RTL layouts with representative data, and explicitly approve the locale for the startup chooser. Do not fill missing translations with English and mark them as complete. Machine protocol, IDs, raw logs and commands remain unchanged. No new runtime dependencies or release paths.
-
-### Global localization draft expansion (121b)
-
-All 15 draft locales now contain 180 of 565 catalog IDs (2,700 draft entries in total). Expanded coverage includes startup controls, core workspace actions, safety-review notices and risk labels, raw export warnings, browser draft consent, reviewed plans and batch states. These are editorial drafts, not accepted translations. The remaining 385 IDs per locale and full distributed disclaimer translations are outstanding. Coverage and format validation are not linguistic or legal review. EN/RU remain the only selectable locales; the draft data cannot grant authority or change the runtime catalog.
-
-
-### Global localization — history, batch, skills and provider drafts
-
-The 121c draft adds another 133 IDs per locale, bringing all fifteen disabled locales to 313/565 IDs (4695 translated draft entries). This covers the remaining history, batch-review, personal skills, browser handoff, local metadata plan and context chooser entries. Multiline draft values preserve actual line breaks and format parameters. The full notices and remaining 252 IDs per locale are still outstanding. No language activation, runtime catalog changes, legal or editorial approval is implied.
-
-
-### Global localization — workbench, update status and legacy tools
-
-The 121d draft adds 137 IDs per locale (450/565 per locale; 6750 total). These cover accessibility, common editor and terminal controls, update status, repeat history, GitHub controls and legacy report actions. Remaining 115 IDs per locale and full notices are outstanding; all new locales remain disabled. Format checks are not editorial or legal review.
-
-### Visual capture is explicit
-
-Routine Qt smoke and native layout/glyph acceptance do not save images. The dedicated Windows layout probe is `tools/smoke_qt.py --visual-only` with `QT_QPA_PLATFORM=windows`. Synthetic PNG capture requires the additional `--capture-visual` flag and an explicit existing `RELAY_VISUAL_DIR` with no PNG files. The path variable alone never enables capture. Existing screenshots are not removed.
-
-### Single workspace (121e)
-
-Removed the mode chooser, Casual dashboard, preview animation and redundant command review dialog. Old mode preferences are dropped without changing other settings. Ordinary manual Run and known successful repeats need no extra modal; failed/uncertain previous outcomes and high-risk exact one-use approvals remain default-cancel. No change to task schemas, report archive, safety gate, browser consent or updater. Obsolete translation IDs are retained temporarily until the global catalog cleanup; incomplete locales remain disabled.
-
-### Single-workspace localization catalog cleanup
-
-Removed 37 retired presentation keys from the canonical and draft catalogs, retaining shared actions and active safety strings. Draft coverage: 528 of 528 keys per locale. Draft languages remain disabled pending complete translations, notices, and review. Routine captures remain opt-in.
-
-The 121h layout uses consistent 16 px outer margins, 12 px section gaps, 8 px control gaps and aligned pane edges. No routine screenshot capture. The draft translation prefixes retain their spaces through explicit source escapes rather than trailing whitespace.
-
-### Workbench alignment and test scope
-
-Main workspace rows center controls vertically; command and terminal titles share a minimum header height and use plain text. The splitter uses a subdued hover/drag state. Routine regression runs use offscreen Qt and a separate native font-only probe without top-level widgets. Native visible-window layout/capture is explicitly opt-in (`--visual-only`, optionally `--capture-visual`). Row geometry checks cannot establish subjective visual quality; native DPI and screenshots are deferred to explicit acceptance. Full accumulated diff review and Grand QA must precede integration PR.
-
-### Development preview of all 17 locales (121j)
-
-All 15 additional bundled catalogs are selectable in development as explicitly labelled previews. Each has the six translated notice paragraphs and the unchanged English source appended, with source digest validation; EN/RU retain the original notice. Catalog format validation is not independent linguistic/legal review. RTL applies to Arabic chrome and dialogs; raw path/command/report controls remain LTR. Routine tests create no PNGs or visible native windows. Native font shaping probes report missing sample locales rather than claim comprehensive glyph coverage. Full multilingual geometry/DPI, linguistic review and release approval remain gates for Grand QA; no permission or protocol changes.
+Routine Qt tests use offscreen geometry and a separate native Windows font-only probe, no visible native windows or PNGs. Explicit Windows visual acceptance uses `tools/smoke_qt.py --visual-only` with `QT_QPA_PLATFORM=windows`; saving synthetic PNGs additionally requires `--capture-visual` and an explicit existing empty-of-PNGs `RELAY_VISUAL_DIR`. The path variable alone never enables capture. Actual native DPI and subjective visual acceptance remain separate.
 
 ### Pre-integration review hardening
 

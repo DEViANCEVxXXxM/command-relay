@@ -24,6 +24,19 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Local report archives and evidence ZIP exports; best-effort secret masking in protected exports.
 - No mandatory API key, account, telemetry or cloud connection. Commands may access the network if you explicitly run such commands.
 
+## Upcoming 4.4.0 — Unified Experience Update
+
+This section describes the integration candidate, not an already published release. Consult Releases for available versions.
+
+- One full-width workbench with top navigation, a resizable command editor and terminal, and optional bottom utilities. Ordinary manual Run needs no second confirmation; high-risk and failed/uncertain repeat review remains.
+- Reviewed dependency-aware task batches: explicit workspaces, sequential by default, opt-in bounded parallel workers for independent tasks. No sandbox or unattended arbitrary PowerShell.
+- Personal Skills, bounded read-only metadata plans, runtime diagnostics, recent reports and structured session handoff.
+- Optional off-record AI Chat (Qt WebEngine), reviewed same-origin JSON import and masked draft insertion into a supported empty textarea. No automatic Send, provider API requirement or guaranteed provider compatibility.
+- Smart masked JSON, Detailed masked JSON, protected text and unmasked RAW export. Plain click = Smart; Shift+click = protected text; Ctrl+click = RAW (Ctrl wins). Review exports before sharing.
+- 17 selectable interface languages: English/Russian and 15 translation previews; Arabic RTL chrome, LTR commands, paths and reports. Preview translations are not independently certified.
+
+Automated Grand QA: 479 tests on Windows and Linux; 17 locale layouts at synthetic 100%, 150% and 200% scaling, native font samples, disposable batch execution and loopback browser. Real native visual/DPI, provider login, independent translation/legal review and production signed update acceptance remain separate.
+
 ## What's new in 4.3.0 — Automatic Updates
 
 - **More → Settings → Updates…**: explicitly check stable GitHub releases, download and verify a newer signed package, and prepare an update. No automatic polling or unattended install.
@@ -37,7 +50,7 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Built-in automatic squash merge requires an explicit, scoped opt-in in **More → Settings → Safety settings…**, plus review of the specific task. It is off by default.
 - Review the resolved workspace and repository, revoke grants, or inspect up to 128 local permission changes in History. Authorization is rechecked before a merge request.
 - Settings group existing safety and display preferences. Action rows adapt to longer labels and compact windows, including RTL.
-- Other unattended actions are not implemented. The policy does not control arbitrary reviewed scripts, and is not a sandbox. Expanded localization and parallel execution remain future work.
+- Other unattended actions are not implemented. The policy does not control arbitrary reviewed scripts, and is not a sandbox. Expanded localization and reviewed batch execution were not part of 4.2.0.
 
 ## Workflow Intelligence — introduced in 4.1.0
 
@@ -47,7 +60,7 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Run reviewed tasks that wait for CI and, with the scoped opt-in, merge the specified PR; exact commit checks and GitHub protection still apply. There is no automatic execution on import.
 - Preview actionable session context and choose masked or raw report export modes explicitly.
 
-GitHub integration is optional and can perform remote writes only when requested. Review commands and permissions before execution; neither the inspector nor secret masking is a security boundary. Expanded localization and parallel execution are not part of this release.
+GitHub integration is optional and can perform remote writes only when requested. Review commands and permissions before execution; neither the inspector nor secret masking is a security boundary. Expanded localization and parallel execution were not part of 4.1.0.
 
 ## Quick start
 
@@ -75,7 +88,7 @@ The portable ZIP includes Python source and launchers, not Python itself or a co
 
 ## Work with an AI chat
 
-Attach [the AI operating guide](docs/COMMAND_RELAY_AI_GUIDE.md) to your chat. Ask the assistant to produce `command-relay/task-v1` JSON, import it, review the commands, and send back `command-relay/result-v1` using Copy. Use **More → Copy session context** to resume in another chat.
+Attach [the AI operating guide](docs/COMMAND_RELAY_AI_GUIDE.md) to your chat. Ask the assistant to produce `command-relay/task-v1` JSON, import it, review the commands, and send back `command-relay/result-v1` using Copy. In the 4.4 candidate, use **Tools → Copy session context** (More in 4.3) to resume in another chat.
 
 ## Safety and privacy
 
@@ -90,7 +103,7 @@ python -m unittest discover -v
 python tools/build_release.py
 ```
 
-With PySide6 installed, run `python tools/smoke_qt.py` for a non-executing GUI construction check. See [CONTRIBUTING.md](CONTRIBUTING.md), [architecture](docs/architecture.md) and [maintainer setup](docs/github-setup.md).
+With PySide6 installed, run `python tools/smoke_qt.py` for GUI regressions with mocked dispatch. Optional `--native-batch --browser-bridge` adds disposable PowerShell and loopback browser checks. Routine checks do not save screenshots. See [CONTRIBUTING.md](CONTRIBUTING.md), [architecture](docs/architecture.md) and [maintainer setup](docs/github-setup.md).
 
 ## Compatibility
 

@@ -8,7 +8,7 @@ Discuss substantial changes in an issue first. Keep changes focused; preserve th
 4. For changes to execution or Windows behavior, manually run the two bundled example tasks following `docs/manual.txt`. Never use real secrets as fixtures.
 5. Update the guide/manual, tests and changelog when behavior changes. Open a pull request using the provided template.
 
-Unit tests use the standard library and Git. The GUI smoke test does not execute PowerShell. Application modules live in `command_relay/` and use package-relative imports. Keep local data paths anchored to the distribution root, not the package directory. Avoid bulk formatting changes in unrelated pull requests.
+Unit tests use the standard library and Git. The default GUI smoke test mocks execution. Explicit `--native-batch` runs harmless disposable Windows tasks; `--browser-bridge` tests a local loopback provider. Routine checks are offscreen and save no screenshots; explicit native visual capture is opt-in. Application modules live in `command_relay/` and use package-relative imports. Keep local data paths anchored to the distribution root, not the package directory. Avoid bulk formatting changes in unrelated pull requests.
 
 Contribute only material you have the right to submit under [Apache License 2.0](LICENSE). Preserve applicable attribution in [NOTICE](NOTICE) and identify modified files when redistributing. Do not weaken the startup risk acknowledgement or misrepresent its legal effect.
 

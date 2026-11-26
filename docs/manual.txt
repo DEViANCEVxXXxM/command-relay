@@ -1,4 +1,5 @@
-COMMAND RELAY 4.3.0 — AUTOMATIC UPDATES
+COMMAND RELAY — 4.4.0 UNIFIED EXPERIENCE CANDIDATE
+Runtime version remains 4.3.0 until release preparation.
 Compatible with existing task-v1, result-v1 and session-v1 packets. See README.md and CHANGELOG.md.
 
 LICENSE AND EXECUTION RISKS
@@ -30,7 +31,7 @@ SIGNED UPDATES
 into a fresh directory; unsigned 4.2.0 cannot be updated in place. Keep the ZIP,
 .sha256, .manifest.json and .manifest.sig for the installed version together in
 an external folder. Never copy the old automation-permissions.json.
-More > Settings > Updates: Check for updates, then Download & Verify for a
+Settings > Updates: Check for updates, then Download & Verify for a
 newer signed release. Verification alone does not authorize installation.
 Enable the separate application-local grant in Safety settings only if desired.
 Prepare installation asks for the folder containing the original signed assets
@@ -61,10 +62,10 @@ Apply these instructions to any project we work on, regardless of its programmin
 
 QUICK WORKFLOW
 Choose your workspace once. Import the AI task, review it, Run commands,
-then Copy and paste into the chat. No new mandatory controls or setup for ordinary tasks. The main screen is simplified: Steps and
-Scripts in the sidebar; More at the top right for optional operations.
-Find reveals the search field only when needed (Ctrl+F). Copy and History
-remain visible. More > View can hide the sidebar or change output settings.
+then Copy and paste into the chat. No separate Casual mode or startup mode chooser. The command editor and terminal
+occupy the full width. Tools > Show workspace utilities opens the optional bottom
+dock with Steps, Scripts and recent History. Find (Ctrl+F) reveals terminal search.
+Settings contains theme, language, reduced motion and output display options.
 Protected Copy and compact text exports are prepared in a worker; wait for Copied before pasting.
 
 INPUT
@@ -79,14 +80,18 @@ Import does not execute; Run or Ctrl+Enter starts the reviewed editor contents.
 No mandatory AI API, credentials, uploads, telemetry or execution-policy override.
 Optional GitHub tools use authenticated GitHub CLI and can make explicit remote writes.
 Review the intended repository, PR, CI and commit identity before authorizing a merge.
-Matching prior runs require explicit rerun confirmation when found in bounded history.
+Ordinary manual Run and known successful repeats need no extra confirmation.
+High-risk findings require exact one-use approval; failed or uncertain repeats
+require separate confirmation. The absence of a heuristic match is not safety.
 
 COPY
 Click Copy: AI result JSON (command-relay/result-v1), compact JSON encoding.
 Whitespace between JSON fields is minimized; detected secrets are masked in exported data.
 Shift+click: protected text. Ctrl+click: RAW full report without masking (Ctrl wins).
-Reports up to 48,000 Unicode characters are selected in full before privacy masking;
-larger reports use a bounded compact extract. The budget is
+Smart JSON folds recognized verbose success lines where applicable; Detailed JSON
+uses the prior bounded view. Assertions and comparison use the complete source
+within existing scan limits. Reports up to 48,000 Unicode characters otherwise
+fit in full before privacy masking; larger reports use a bounded extract. The budget is
 for the output field, not the whole JSON packet. Git hash/ref lines are selected
 along with structured results and the beginning/end. For oversized extracts,
 whole lines may still be omitted to fit; no guarantee that every hash survives.
@@ -115,13 +120,13 @@ artifact metrics are hints only; no files are opened or verified automatically.
 Automatic evidence/assertion scan limit: 8,000,000 characters; lines over
 16,384 characters are skipped with a visible limitation. Original logs stay
 unchanged. Additional JSON fields are outside the 48,000-character output cap.
-More > Project > Project context is optional for a fresh lightweight snapshot.
+Tools > Project > Project context is optional for a fresh lightweight snapshot.
 
 SESSION HANDOFF (NEW CHAT)
 Run history is saved automatically in the existing reports/ folder. New runs
 record task title, purpose and expected outcome (up to 300 characters each,
 only when the imported script is unchanged). No separate session database.
-To continue in a new AI chat: select the same WORKSPACE, choose More > Copy
+To continue in a new AI chat: select the same WORKSPACE, choose Tools > Copy
 session context, wait for Copied, then paste into the new chat with the guide.
 A command-relay/session-v1 packet contains up to 12 recent matching archived
 runs, their reported exit/cancellation status, available Git HEAD, declared
@@ -144,22 +149,22 @@ Qt Fusion UI, live splitters, animated activity strip, colored status bar,
 monospace editor/terminal, 6000 display blocks and complete logs on disk.
 History supports search, filter, copy, compact comparison, metrics and ZIP.
 Search in terminal is limited to visible tail. Workspace Profiles are local.
-More > Git: local Git dashboard and fixed Git read operations.
+Tools > Git: local Git dashboard and fixed Git read operations.
 GitHub pull requests: optional authenticated CLI, inspect CI, explicit squash merge,
 and review/copy status. GitHub controls merge permissions.
-More > Settings > Safety settings: built-in automatic squash merge is denied
+Settings > Safety settings: built-in automatic squash merge is denied
 by default. Review exact workspace and repository, opt in explicitly, and
 confirm the specific task. Revoke selected/all grants and view bounded History.
 Do not copy or share automation-permissions.json. Malformed policy denies
 automation; legacy general settings cannot grant it. The policy does not
-restrict arbitrary scripts. Other unattended actions are not implemented.
-More > Settings also groups display preferences. Long action labels wrap.
+restrict arbitrary scripts. No unrestricted unattended PowerShell or runtime sandbox is provided.
+Settings also groups display preferences. Long action labels wrap.
 History > Review workspace session: preview protected session context before export.
-More > Reports: explicit masked JSON, masked compact text and RAW/unmasked copy modes.
-More > Project: project snapshot and selected source context.
-More > Reports: observed metrics, latest report and reports folder.
-More also contains SHA-256, task queue (session only, manual launch),
-Clear editor and display preferences. These are optional; routine tasks need none.
+Tools > Reports: explicit masked JSON, masked compact text and RAW/unmasked copy modes.
+Tools > Project: project snapshot and selected source context.
+Tools > Reports: observed metrics, latest report and reports folder.
+Tools also contains SHA-256, runtime diagnostics, reviewed local plans and Clear
+editor. Queue contains manual task queue and reviewed task batches.
 Evidence ZIP contains selected reports and SHA-256 manifest. No automatic upload.
 Use only trusted scripts. Runs are not sandboxed. Stop cannot roll back effects.
 Windows execution policy is respected. Do not weaken system protections.
@@ -245,7 +250,7 @@ reports and other copy modes are prepared on demand. No clipboard change
 occurs without an explicit copy action. No additional files, dependencies,
 network access, schema changes or automatic execution are introduced.
 If a run cannot be archived, Copy must not silently return an older run.
-Wait for Copied before pasting. Web Relay remains deferred.
+Wait for Copied before pasting. The optional Browser Bridge is described below.
 
 4.0 STABILITY UPDATE
 The regular Import > Run > Copy workflow and task-v1/result-v1 schemas stay
@@ -262,8 +267,35 @@ History loads metadata in a background worker; search and filters reuse the
 snapshot, with a short debounce. Refresh explicitly reloads it. The window
 lists up to 3,000 recent reports from at most 50,000 directory entries and
 shows a notice when limited. Older files are not deleted; access them in
-More > Reports > Folder. If the directory enumeration limit is reached,
+Tools > Reports > Folder. If the directory enumeration limit is reached,
 not all recent reports may have been seen. A new run waits until an explicitly
 requested Copy finishes to avoid confusing report ownership. The app does
 not copy automatically. No new dependencies, network actions or mandatory
-controls. Web Relay remains deferred.
+controls. The optional Browser Bridge is described below.
+
+4.4 CANDIDATE FEATURES AND LIMITS
+Queue > Task batches reviews command-relay/batch-v1 dependencies and workspaces.
+Sequential is default; parallelism is opt-in for independent, distinct,
+non-overlapping roots. Each task retains its own report and declared assertions.
+Failed dependencies block downstream tasks; Stop is not rollback. Windows Job
+Objects support process ownership and cancellation, not isolation.
+
+Skills imports declarative command-relay/skill-v1 revisions into
+%LOCALAPPDATA%/CommandRelay/User/skills (home AppData fallback). Copy instructions
+or load a template explicitly; neither grants authority nor starts execution.
+Tools also offers reviewed plan-v1 fixed read-only metadata operations and runtime
+diagnostics; no arbitrary shell, file-content reading or writes in plan-v1.
+
+AI Chat is optional, lazy and off-record. Enter a provider HTTPS address (loopback
+HTTP for local tests). Same-origin JSON downloads are validated and must be
+explicitly imported. No task executes on download. For return, use protected
+clipboard Copy or prepare a masked report draft in a supported empty HTML textarea.
+Review then Insert draft; the page receives text at insertion. Send manually.
+Unsupported providers use an external browser and clipboard. No persistent
+provider profile, automatic Send, delivery guarantee or mandatory API key.
+
+Settings > Language offers English/Russian and 15 labelled preview translations.
+Arabic chrome is RTL; raw paths, commands and report editors remain LTR.
+Preview startup notices include the original English text. OS controls, external
+provider text and raw technical output may not be translated. Independent
+linguistic/legal review and actual native DPI acceptance are outstanding.

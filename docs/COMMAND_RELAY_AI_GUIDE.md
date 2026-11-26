@@ -133,12 +133,13 @@ measurement or a task explicitly designed for that retry. For changed scripts,
 use a new ID or revision suffix. A read-only verification or repair task should
 have its own ID and refer to the prior report or resource identifiers. Do not
 rerun a mutating task merely to make its previous FAIL become PASS. The repeat
-confirmation uses bounded lexical history. The pre-run check in 4.4 development
+confirmation uses bounded lexical history. The bounded pre-run history check in 4.4
 checks up to 3000 report headers (within the directory limit); automatic result
 comparison retains its separate 100-header limit. An incomplete scan is not a
 confirmed repeat, and still requires explicit user confirmation;
 absence of a match is not proof of a first run, and confirmation does not make
-an unsafe retry safe.
+an unsafe retry safe. Ordinary manual Run and known successful repeats do not
+require an extra modal; high-risk and failed/uncertain cases remain separate.
 
 ### GitHub workflows with optional task-level automation (4.1 development)
 
@@ -254,7 +255,7 @@ In 4.1 development, `current_project` records a fresh bounded local project snap
 
 The packet covers at most 12 recent runs matching the normalized absolute workspace path, not repository identity. It examines up to 10,000 directory entries and 250 recent archive headers; each full scan is limited to 512,000 bytes and all full body scans to 4,000,000 bytes. The compact JSON is capped at 24,000 characters; older rows may be removed to fit. Inspect `limits` for omissions and unreadable reports. Moved projects, aliases, relative historical paths and older reports may not be represented. Use History to recover an individual full report when necessary. No source files or raw log excerpts are included, but intent and metric values may be confidential. The export is local, explicitly copied by the user, and never uploaded automatically. Never request a handoff on every turn.
 
-## 6. Optional tools (More menu)
+## 6. Optional tools (Tools menu)
 
 For ordinary tasks, do not send users through this menu: automatic context, evidence and declared assertions arrive in the normal Copy result. Use the following only when the needed data is missing.
 
@@ -361,13 +362,13 @@ Wait for Copied before pasting. Web Relay remains deferred.
 
 ### Version 4.0 — stability and responsiveness
 
-The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-looking malformed objects and unsupported JSON objects are rejected at import; provide a complete valid task packet instead of a fragment. Run identity is derived from the report header, not similarly named body lines. This is not authentication. The GUI tail is additionally bounded by text size (about 512,000 characters, smaller after trimming) and 6,000 blocks; the complete archived report is the evidence source. History metadata loads in a worker, and search uses the loaded snapshot. Refresh reloads it. The dialog loads metadata for up to 3,000 recent reports among at most 50,000 directory entries. Search covers that entire snapshot; the table initially shows at most 100 matching runs and Show more runs reveals the next 100, retaining visible selection. Refresh or a changed filter resets this display limit; a limit notice means older or unenumerated files remain available in More > Reports > Folder. During a requested export, wait for Copied before starting another run. No additional mandatory actions, dependency installations, internet requests or automatic clipboard writes. Web Relay is not implemented.
+The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-looking malformed objects and unsupported JSON objects are rejected at import; provide a complete valid task packet instead of a fragment. Run identity is derived from the report header, not similarly named body lines. This is not authentication. The GUI tail is additionally bounded by text size (about 512,000 characters, smaller after trimming) and 6,000 blocks; the complete archived report is the evidence source. History metadata loads in a worker, and search uses the loaded snapshot. Refresh reloads it. The dialog loads metadata for up to 3,000 recent reports among at most 50,000 directory entries. Search covers that entire snapshot; the table initially shows at most 100 matching runs and Show more runs reveals the next 100, retaining visible selection. Refresh or a changed filter resets this display limit; a limit notice means older or unenumerated files remain available in Tools > Reports > Folder. During a requested export, wait for Copied before starting another run. No additional mandatory actions, dependency installations, internet requests or automatic clipboard writes. The optional Browser Bridge is available in the 4.4 candidate; see the dedicated section.
 
 ### Accessible report export
 
 The main workbench keeps the existing Copy button and modifier shortcuts. Tools → Reports also exposes explicit AI result (masked), compact text (masked), and full report (RAW, unmasked) actions without modifier keys. Review any export before sharing; raw reports have no privacy masking. The editor, output, workspace and navigation controls have accessible names and visible keyboard focus.
 
-Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from More, the terminal and Ctrl+F. In released 4.2.0, language and update settings are planned, not implemented; no placeholder actions are shown. See the 4.3.0 signed updates section for the newer Updates and application-local permission controls.
+Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from Tools in the 4.4 candidate, the terminal and Ctrl+F. In released 4.2.0, language and update settings are planned, not implemented; no placeholder actions are shown. See the 4.3.0 signed updates section for the newer Updates and application-local permission controls.
 
 
 ## 10. Version 4.3.0 — signed updates
