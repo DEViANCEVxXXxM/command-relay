@@ -532,3 +532,49 @@ class BatchSessionTests(unittest.TestCase):
         self.assertEqual(self.handles,{})
         self.assertEqual(snapshots[0]['review_faults']['a']['status'],'matched')
         self.assertTrue(snapshots[-1]['finished'])
+
+
+class SafetyGateTests(unittest.TestCase):
+    def test_exact_one_use_and_workspace_binding(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);a=root/'a';b=root/'b';a.mkdir();b.mkdir()
+            def review(task,script,where):return r.DispatchReview.capture(task,r.prepare(script).encode('utf-8-sig'),where,None,script=script)
+            risky=review('a','Restart-Computer',a)
+            self.assertFalse(r.SafetyGate().admit(risky))
+            gate=r.SafetyGate((risky,))
+            self.assertFalse(gate.admit(review('b','Restart-Computer',a)))
+            self.assertFalse(gate.admit(review('a','Stop-Computer',a)))
+            self.assertFalse(gate.admit(review('a','Restart-Computer',b)))
+            self.assertTrue(gate.admit(risky));self.assertFalse(gate.admit(risky))
+            self.assertTrue(gate.admit(review('a','Write-Output 1',a)))
+    def test_batch_halts_before_unapproved_launch(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);reports=root/'reports';reports.mkdir()
+            helper=BatchPreviewTests();entry=helper.entry('a');entry['task']['script']='Restart-Computer'
+            plan=r.load_batch(helper.raw(entry,helper.entry('b',('a',))))
+            paths={'a':root,'b':root};_,reviews=plan.review(paths)
+            launches=[];snapshots=[]
+            session=r.BatchExecutionSession(plan,paths,reviews,reports,launch=lambda *args:launches.append(args))
+            def publish(snap):
+                snapshots.append(snap)
+                if snap['halted'] and not snap['finished']:session.stop()
+            session.run(publish)
+            self.assertFalse(launches);self.assertTrue(snapshots[0]['halted']);self.assertIn('a',snapshots[0]['safety_faults']);self.assertTrue(snapshots[-1]['finished'])
+            self.assertFalse(list(reports.iterdir()))
+    def test_batch_approval_never_inferred_from_packet(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);helper=BatchPreviewTests();entry=helper.entry('a');entry['task']['script']='Restart-Computer';plan=r.load_batch(helper.raw(entry));_,reviews=plan.review({'a':root})
+            other=r.DispatchReview.capture('a',r.prepare('Stop-Computer').encode('utf-8-sig'),root,None)
+            with self.assertRaises(ValueError):r.BatchExecutionSession(plan,{'a':root},reviews,root,safety_approved=(other,))
+
+    def test_batch_exact_approval_can_admit_once(self):
+        with tempfile.TemporaryDirectory() as td:
+            root=pathlib.Path(td);reports=root/'reports';reports.mkdir()
+            helper=BatchPreviewTests();entry=helper.entry('a');entry['task']['script']='Restart-Computer'
+            plan=r.load_batch(helper.raw(entry));paths={'a':root};_,reviews=plan.review(paths)
+            launches=[]
+            def fake(attempt,review,emit):
+                launches.append(review);handle=BatchControllerTests.Handle(attempt,review,emit);handle.finish();return handle
+            session=r.BatchExecutionSession(plan,paths,reviews,reports,launch=fake,safety_approved=reviews)
+            snapshots=[];session.run(snapshots.append)
+            self.assertEqual(launches,list(reviews));self.assertEqual(snapshots[-1]['states'],{'a':'succeeded'})

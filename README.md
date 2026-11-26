@@ -105,3 +105,8 @@ The [disclaimer](DISCLAIMER.md) describes execution risks and is not an amendmen
 ## Attribution
 
 If you use this project, parts of it, or draw on it as a reference or inspiration, please credit Command Relay and link to the original GitHub repository. Attribution for inspiration alone is a request, not an additional license requirement.
+
+
+### Personal Skills
+
+Use **Skills** to import reusable AI instructions and optional task templates into the per-user data directory. Personal skills are not part of the signed program files, do not auto-run or grant permissions, and are kept across supported updates. Use a source checkout or independent fork for changes to Command Relay itself; do not patch the managed installation for personal workflows. See the [AI guide](docs/COMMAND_RELAY_AI_GUIDE.md) and [architecture](docs/architecture.md).

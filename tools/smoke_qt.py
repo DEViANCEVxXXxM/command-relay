@@ -5,17 +5,22 @@ import json
 import tempfile
 from pathlib import Path
 import sys
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+if '--browser-bridge' in sys.argv and os.environ['QT_QPA_PLATFORM']=='offscreen':
+    # Software rendering is for headless acceptance only; keep the Chromium sandbox.
+    flags=os.environ.get('QTWEBENGINE_CHROMIUM_FLAGS','')
+    os.environ['QTWEBENGINE_CHROMIUM_FLAGS']=(flags+' --disable-gpu').strip()
 from PySide6.QtCore import QTimer, Qt, QPoint, QCoreApplication, QEvent
 from PySide6.QtGui import QPalette
-from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox, QFileDialog
+from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox, QFileDialog, QLabel, QCheckBox
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
-from command_relay.relay_terms import confirm_usage_terms, disclaimer_text, choose_language, tr
+from command_relay.relay_terms import confirm_usage_terms, disclaimer_text, choose_language, tr, LANGUAGES, PREVIEW_LANGUAGES, locale_direction
 
+QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
 app = QApplication([])
 root = Path(__file__).resolve().parents[1]
 
@@ -25,6 +30,128 @@ def settle_layout():
     for _ in range(4):
         QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest.value)
         app.processEvents()
+
+
+def verify_row_centers(window, widgets):
+    # Compare centers in the same coordinate system, not local widget positions.
+    centers = [widget.mapTo(window, widget.rect().center()).y() for widget in widgets]
+    assert max(centers)-min(centers)<=1, centers
+
+
+def visual_acceptance():
+    # Separate synthetic fixtures: no real paths, reports, network or settings writes.
+    native_layout = '--visual-only' in sys.argv
+    capture = '--capture-visual' in sys.argv
+    assert not capture or native_layout, 'Capture requires an explicit native visual run'
+    visual_dir = os.environ.get('RELAY_VISUAL_DIR') if capture else None
+    if capture:
+        assert visual_dir and Path(visual_dir).is_dir(), 'Explicit capture directory required'
+        assert not list(Path(visual_dir).glob('*.png')), 'Capture directory must not contain PNGs'
+    if native_layout:
+        assert app.platformName()=='windows',app.platformName()
+        assert relay_qt.configure_fonts(), 'No installed UI and monospace font with Latin/Cyrillic coverage'
+        print('FONT_GLYPH_COVERAGE_PASS=True',flush=True)
+    previous_theme=relay_qt.current_theme()
+    for language in ('en','ru'):
+        for theme in ('dark','light'):
+            with patch.object(relay_qt,'read_settings',return_value={'language':language,'theme':theme,'mode':'casual','show_sidebar':True,'workspace':'C:/Example/Workspace'}), patch.object(relay_qt.App,'start_initial_restore'):
+                visual=relay_qt.App()
+                try:
+                    visual.show();settle_layout()
+                    script='Write-Output "FILES_CHECKED=42"'
+                    packet={'schema':'command-relay/task-v1','task_id':'visual-fixture','title':'Workspace inspection' if language=='en' else 'Проверка рабочей папки','purpose':'Read local metadata without modifying files.' if language=='en' else 'Проверить метаданные без изменения файлов.','expected':'A short diagnostic report.' if language=='en' else 'Краткий диагностический отчёт.','script':script,'assertions':{'exit_code':0}}
+                    visual.import_data(json.dumps(packet,ensure_ascii=False).encode(),'example.json');visual.update_inspector()
+                    titles=('System diagnostics','Workspace inspection','Environment check') if language=='en' else ('Диагностика системы','Проверка папки','Проверка окружения')
+                    visual.session_runs.addItems([title+'  ·  '+visual.ui('nav_recent_exit').format(code=code)+'  ·  '+relay_qt.verdict_text(verdict,language) for title,code,verdict in zip(titles,(0,0,1),('PASS','PASS','FAIL'))]);visual.session_runs.show()
+                    visual.session_status.setText(visual.ui('nav_recent_count').format(count=3))
+                    visual.output.setPlainText('@step 01 — Example output\nFILES_CHECKED=42\nUNIT_TESTS_PASS=True\nProcess exit code: 0')
+                    if native_layout:
+                        assert relay_qt.font_has_glyphs(visual.runbtn.font(),relay_qt.UI_GLYPHS)
+                        assert relay_qt.font_has_glyphs(visual.editor.font(),relay_qt.CODE_GLYPHS)
+                    assert not hasattr(visual,'mode_switch') and not hasattr(visual,'casual_scroll')
+                    for width,height in ((850,560),(960,740),(1180,740),(1440,900),(850,560),(1180,740)):
+                        visual.resize(width,height);settle_layout()
+                        assert visual.width()<=width and visual.height()<=height,(language,theme,visual.size())
+                        assert not visual.header_row.vertical and visual.auxiliary.isHidden()
+                        assert visual.main_split.orientation()==Qt.Orientation.Vertical and visual.main_split.count()==2
+                        assert visual.navigation.width()==visual.work_surface.width()
+                        assert visual.editor.width()==visual.output.width() and visual.editor.width()>=visual.work_surface.width()-2
+                        nav_buttons=(visual.session_nav,visual.queue_nav,visual.history_nav,visual.skills_button,visual.about_button,visual.more,visual.settings_nav)
+                        assert max(b.height() for b in nav_buttons)-min(b.height() for b in nav_buttons)<=1
+                        assert visual.status_text.contentsMargins().left()==16
+                        verify_row_centers(visual,(visual.workspace_label,visual.cwd,visual.browse_button,visual.profiles_button))
+                        for groups, adaptive in (((nav_buttons[:4],nav_buttons[4:]),visual.header_row),
+                                (((visual.openbtn,visual.pastebtn,visual.chat_button),(visual.stopbtn,visual.runbtn)),visual.command_row)):
+                            for group in groups:verify_row_centers(visual,group)
+                            if adaptive.geometry().width()>=adaptive.sizeHint().width():
+                                verify_row_centers(visual,groups[0]+groups[1])
+                        verify_row_centers(visual,(visual.output_label,visual.follow,visual.find_button))
+                        assert visual.command_label.height()>=relay_qt.PANE_HEADER_HEIGHT
+                        assert visual.output_label.height()>=relay_qt.PANE_HEADER_HEIGHT
+                        verify_row_centers(visual,(visual.detail,visual.result_copy_button))
+                        for button in (visual.session_nav,visual.queue_nav,visual.history_nav,visual.skills_button,visual.settings_nav,visual.more,visual.about_button,visual.openbtn,visual.pastebtn,visual.chat_button,visual.stopbtn,visual.runbtn):
+                            assert button.isVisible() and button.width()>=button.sizeHint().width(),(language,theme,button.text(),button.width(),button.sizeHint().width())
+                            assert visual.rect().contains(button.rect().translated(button.mapTo(visual,QPoint(0,0))))
+                        assert visual.editor.isVisible() and visual.output.isVisible()
+                        assert visual.editor.toPlainText()==script and not visual.running
+                    if visual_dir:
+                        path=Path(visual_dir)/f'{language}-{theme}-workspace.png'
+                        pix=visual.grab();assert not pix.isNull() and pix.width()>0 and pix.height()>0
+                        assert pix.save(str(path)),path
+                finally:
+                    visual.hide();visual.deleteLater();settle_layout()
+    for language in sorted(PREVIEW_LANGUAGES):
+        with patch.object(relay_qt,'read_settings',return_value={'language':language,'workspace':'C:/Example/Workspace'}), patch.object(relay_qt.App,'start_initial_restore'):
+            visual=relay_qt.App()
+            try:
+                assert visual.ui_language==language and visual.runbtn.text()==tr('run_commands',language)
+                assert visual.layoutDirection()==(Qt.LayoutDirection.RightToLeft if locale_direction(language)=='rtl' else Qt.LayoutDirection.LeftToRight)
+                assert all(field.layoutDirection()==Qt.LayoutDirection.LeftToRight for field in (visual.cwd,visual.editor,visual.output))
+                visual.editor.setPlainText('Write-Output 42');assert visual.editor.toPlainText()=='Write-Output 42'
+                assert not visual.running
+            finally:
+                visual.hide();visual.deleteLater();settle_layout()
+    print('GLOBAL_WORKSPACE_PREVIEW_PASS=True',flush=True)
+    relay_qt.apply_theme(previous_theme)
+    print('WORKSPACE_VISUAL_LAYOUT_PASS=True',flush=True)
+    print('FULL_WIDTH_WORKSPACE_PASS=True',flush=True)
+    print('WORKBENCH_ROW_ALIGNMENT_PASS=True',flush=True)
+    if visual_dir:
+        assert len(list(Path(visual_dir).glob('*.png')))==4
+        print('VISUAL_CAPTURE_COUNT=4',flush=True)
+    else:
+        print('VISUAL_CAPTURE_COUNT=0',flush=True)
+        print('VISUAL_CAPTURE_DISABLED=True',flush=True)
+
+if '--font-probe-only' in sys.argv:
+    # Native font lookup, without creating or showing a test window.
+    assert '--capture-visual' not in sys.argv and '--visual-only' not in sys.argv
+    assert app.platformName()=='windows',app.platformName()
+    assert relay_qt.configure_fonts(), 'No installed UI and monospace font with Latin/Cyrillic coverage'
+    assert relay_qt.font_has_glyphs(app.font(),relay_qt.UI_GLYPHS)
+    assert relay_qt.font_has_glyphs(relay_qt.code_font(),relay_qt.CODE_GLYPHS)
+    assert not app.topLevelWidgets()
+    # Shaping with fallback fonts, unlike a single raw-font test. Report unsupported
+    # samples without calling them passed; no font installation or GUI capture.
+    from PySide6.QtGui import QTextLayout
+    missing=[]
+    for language in LANGUAGES:
+        samples=(LANGUAGES[language], tr('terms_heading',language), tr('run_commands',language),tr('safety_gate_title',language))
+        for sample in samples:
+            layout=QTextLayout(sample,app.font());layout.beginLayout();line=layout.createLine();line.setLineWidth(10000);layout.endLayout()
+            runs=layout.glyphRuns()
+            if not runs or any(0 in run.glyphIndexes() for run in runs):
+                missing.append(language);break
+    print('GLOBAL_FONT_MISSING_LOCALES='+(','.join(missing) or 'none'),flush=True)
+    print('GLOBAL_FONT_PROBE_COMPLETED=True',flush=True)
+    print('FONT_GLYPH_COVERAGE_PASS=True',flush=True)
+    print('NATIVE_FONT_PROBE_WINDOWLESS=True',flush=True)
+    raise SystemExit(0)
+
+if '--visual-only' in sys.argv:
+    app.setStyle('Fusion')
+    visual_acceptance()
+    raise SystemExit(0)
 
 
 def native_batch_smoke(parent):
@@ -118,7 +245,7 @@ def native_batch_smoke(parent):
 
 
 # Exercise the real modal dialog without opening a workspace or running commands.
-for language, action, expected in [('en', 'terms_decline', False), ('ru', 'close', False), ('en', 'terms_agree', True), ('ru', 'terms_agree', True)]:
+for language, action, expected in [('en', 'terms_decline', False), ('ru', 'close', False), ('en', 'terms_agree', True), ('ru', 'terms_agree', True)] + [(code,'terms_decline',False) for code in PREVIEW_LANGUAGES]:
     errors = []
     def interact():
         dialog = QApplication.activeModalWidget()
@@ -126,6 +253,7 @@ for language, action, expected in [('en', 'terms_decline', False), ('ru', 'close
             assert isinstance(dialog, QDialog)
             notice = dialog.findChild(QPlainTextEdit)
             assert notice.isReadOnly()
+            assert dialog.layoutDirection()==(Qt.LayoutDirection.RightToLeft if locale_direction(language)=='rtl' else Qt.LayoutDirection.LeftToRight)
             assert notice.toPlainText() == disclaimer_text(root, language)
             assert dialog.findChild(QPushButton, 'terms_agree').text() == tr('terms_agree', language)
             assert dialog.findChild(QPushButton, 'terms_decline').isDefault()
@@ -160,46 +288,28 @@ for selected, expected in [('ru', 'ru'), (None, None)]:
     QTimer.singleShot(0, select)
     assert choose_language() == expected
     assert not errors, errors
-print('Qt startup locale and disclaimer checks passed (English/Russian, select, cancel, accept, decline, close).')
-# Real chooser: cancellation, both modes, and reduced motion (no process/network).
-for mode, reduced in ((None, True), ('casual', False), ('advanced', True)):
-    errors = []
-    def select_mode():
-        dialog = QApplication.activeModalWidget()
-        try:
-            assert dialog.objectName() == 'workspace_mode_dialog'
-            from PySide6.QtWidgets import QRadioButton
-            if mode is None:
-                dialog.reject()
-            else:
-                dialog.findChild(QRadioButton, 'mode_'+mode).setChecked(True)
-                dialog.findChild(QPushButton, 'mode_continue').click()
-        except Exception as exc:
-            errors.append(exc)
-            if dialog is not None: dialog.reject()
-    QTimer.singleShot(0, select_mode)
-    assert relay_qt.choose_workspace_mode(language='ru', reduced_motion=reduced) == mode
-    assert not errors, errors
-print('Qt workspace mode chooser passed (both modes, cancellation, reduced motion).')
+print('Qt startup locale and disclaimer checks passed (17 locale notices, select, cancel, accept, decline, close).')
+print('GLOBAL_NOTICE_UI_PASS=True',flush=True)
 # Localized workbench is constructed from a saved locale. Keep raw content intact.
-for mode in ('casual', 'advanced'):
+for mode in ('casual', 'advanced', None):
     with patch.object(relay_qt, 'read_settings', return_value={'language':'ru','mode':mode}), patch.object(relay_qt.App, 'start_initial_restore'):
         localized = relay_qt.App()
         localized.show(); settle_layout()
         assert localized.ui_language == 'ru'
-        assert localized.more.text() == tr('more', 'ru')
+        assert localized.more.text() == tr('nav_tools', 'ru')
         assert localized.settings_menu.title() == tr('settings', 'ru')
-        assert localized.runbtn.text() == tr('run_short' if mode == 'casual' else 'run_commands', 'ru')
+        assert localized.runbtn.text() == tr('run_commands', 'ru')
         assert localized.editor.accessibleName() == tr('command_editor', 'ru')
         assert localized.safety_action.isEnabled()
         assert 'без маскирования' in localized.copy_raw_action.text()
         raw = 'Write-Output "COMMANDS / READY"'
         localized.editor.setPlainText(raw); localized.output.setPlainText(raw)
         with patch.object(localized, 'start_process') as start:
-            localized.apply_mode('advanced' if mode == 'casual' else 'casual')
+            assert localized.editor.isVisible() and localized.output.isVisible()
+            assert 'mode' not in localized.settings and not hasattr(localized,'mode_switch')
             assert localized.editor.toPlainText() == raw and localized.output.toPlainText() == raw
             start.assert_not_called()
-        # Batch review is inert in both modes, binds only explicitly selected paths.
+        # Batch review is inert in legacy settings, binds only explicitly selected paths.
         from command_relay.relay_core import load_batch
         with tempfile.TemporaryDirectory() as td:
             from PySide6.QtWidgets import QTableWidget
@@ -275,7 +385,7 @@ for mode in ('casual', 'advanced'):
         assert localized.editor.toPlainText() == 'Write-Output "READY"'
         localized.copy_done(('full', 'raw.txt', 'PASS', 0), 'RAW REPORT\nPASS', None)
         assert QApplication.clipboard().text() == 'RAW REPORT\nPASS'
-        assert 'PASS' in localized.detail.text() and 'RAW' in localized.detail.text()
+        assert relay_qt.verdict_text('PASS','ru') in localized.detail.text() and 'RAW' in localized.detail.text()
         assert localized.detail.toolTip() == tr('runtime_raw_warning', 'ru')
         assert 'Process exit code:' not in tr('runtime_exit_zero', 'ru')
         # Verify Russian dialogs without any policy or network access.
@@ -316,7 +426,7 @@ for mode in ('casual', 'advanced'):
         assert localized.copy_ai_rules_action.text()==tr('copy_ai_rules','ru')
         localized.initial_restore_pending = False
         localized.deleteLater(); settle_layout()
-print('Qt localized workbench and dialog checks passed (Russian labels, both modes, raw content, default-deny permission and unverified update).')
+print('Qt localized workbench and dialog checks passed (Russian labels, legacy settings, raw content, default-deny permission and unverified update).')
 # Disable local restoration; no reports or commands are opened/executed.
 with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(relay_qt.App, 'start_initial_restore'):
     window = relay_qt.App()
@@ -335,25 +445,99 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert 'RAW, unmasked' in window.copy_raw_action.text()
     with patch.object(window, 'copy_report') as copy, patch.object(window, 'start_process') as start:
         for action, mode in ((window.copy_ai_action, 'ai'), (window.copy_text_action, 'compact'),
-                             (window.copy_raw_action, 'full')):
+                             (window.copy_raw_action, 'full'), (window.copy_detailed_action, 'detailed')):
             action.trigger()
             copy.assert_called_with(mode)
-        assert copy.call_count == 3
+        assert copy.call_args_list == [call(mode) for mode in ('ai', 'compact', 'full', 'detailed')]
         start.assert_not_called()
+    # Exercise the actual footer button, not just the independent menu actions.
+    from PySide6.QtTest import QTest
+    button=window.result_copy_button
+    assert button.isVisible() and button.isEnabled()
+    assert button.toolTip()==window.ui('copy_tip')
+    assert button.accessibleDescription()==window.ui('copy_tip')
+    ctrl=Qt.KeyboardModifier.ControlModifier
+    shift=Qt.KeyboardModifier.ShiftModifier
+    plain=Qt.KeyboardModifier.NoModifier
+    with patch.object(window,'copy_report') as copy, patch.object(window,'start_process') as start:
+        for mods, mode in ((plain,'ai'),(shift,'compact'),(ctrl,'full'),(ctrl|shift,'full'),(plain,'ai')):
+            QTest.mouseClick(button,Qt.MouseButton.LeftButton,mods,button.rect().center())
+            copy.assert_called_with(mode)
+        button.setFocus()
+        QTest.keyClick(button,Qt.Key.Key_Space)
+        button.click()
+        assert copy.call_args_list==[call(mode) for mode in ('ai','compact','full','full','ai','ai','ai')]
+        start.assert_not_called()
+    print('COPY_MODIFIER_UI_PASS=True',flush=True)
     print('Qt workbench accessibility checks passed (named controls and explicit copy modes; no commands executed).')
+    # Persisted reports, not an in-memory list. Test bounded read and stale results.
+    with tempfile.TemporaryDirectory() as tmp:
+        folder=Path(tmp);ws=folder/'workspace';ws.mkdir();other=folder/'other';other.mkdir();reports=folder/'reports';reports.mkdir()
+        old_cwd=window.cwd.text();window.cwd.setText(str(ws))
+        for i,scope in enumerate((ws,other,ws)):
+            name=f'report-20261125-01000{i}-000000'+('.partial' if i==2 else '')+'.txt'
+            body=f'COMMAND RELAY REPORT\nStarted: 2026-11-25T01:00:00\nWorking directory: {scope}\nTask ID: session-{i}\nCommand file: task.json\n\n@step 01 — Check\n'
+            if i!=2:body+='@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T01:00:01\n'
+            (reports/name).write_text(body,encoding='utf-8')
+        class ImmediateSessionThread:
+            def __init__(self,target,daemon=True):self.target=target
+            def start(self):self.target()
+        with patch.object(relay_qt,'REPORTS',reports),patch.object(relay_qt.threading,'Thread',ImmediateSessionThread):
+            window.refresh_session_runs();app.processEvents()
+            assert not window.session_loading and window.session_runs.count()==2
+            assert 'session-2' in window.session_runs.item(0).text() and 'Partial' in window.session_runs.item(0).text()
+            assert 'session-0' in window.session_runs.item(1).text() and tr('nav_recent_exit').format(code=0) in window.session_runs.item(1).text()
+            with patch.object(window,'open_path') as opened:
+                window.open_session_run(window.session_runs.item(0));opened.assert_called_once_with(reports/'report-20261125-010002-000000.partial.txt')
+            token=(window.session_revision,window.cwd.text(),reports);snapshot=relay_qt.session.session_packet(reports,ws)
+            window.cwd.setText(str(other));assert window.session_runs.count()==0
+            window.session_runs_done(token,snapshot,None);assert window.session_runs.count()==0
+            window.refresh_session_runs();app.processEvents();assert window.session_runs.count()==1 and 'session-1' in window.session_runs.item(0).text()
+        window.cwd.setText(old_cwd);assert window.session_runs.count()==0
+    print('SESSION_CONTINUITY_UI_PASS=True',flush=True)
+
+    # Local plan: separate protocol, explicit default-No, real harmless metadata,
+    # no arbitrary command execution, no clipboard or send, cooperative stop.
+    import time as plan_time
+    with tempfile.TemporaryDirectory(prefix='relay-local-plan-') as tmp:
+        old_cwd=window.cwd.text();window.cwd.setText(tmp)
+        payload=json.dumps({'schema':relay_qt.features.PLAN_SCHEMA,'operations':['workspace_inventory','project_markers']})
+        Path(tmp,'README.md').write_text('private fixture',encoding='utf-8')
+        with patch.object(relay_qt.QInputDialog,'getMultiLineText',return_value=(payload,True)), \
+             patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No) as approval, \
+             patch.object(relay_qt.LocalPlanDialog,'begin') as begin, \
+             patch.object(window,'start_process') as execute:
+            window.local_plan();begin.assert_not_called();execute.assert_not_called()
+            assert approval.call_args.args[-1]==QMessageBox.StandardButton.No and not window.tool_busy
+        with patch.object(relay_qt.QInputDialog,'getMultiLineText',return_value=(payload,True)), \
+             patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes), \
+             patch.object(window,'tool_done') as completed,patch.object(window,'start_process') as execute:
+            window.local_plan();execute.assert_not_called();completed.assert_called_once()
+            packet=completed.call_args.args[1]
+            assert packet['status']=='complete' and packet['operations_completed']==2
+            assert 'private fixture' not in json.dumps(packet) and not window.tool_busy
+        # Stop before dispatch, then observe completion through the actual timer.
+        stopped=relay_qt.LocalPlanDialog(window,relay_qt.features.ReviewedLocalPlan(payload.encode(),tmp))
+        stopped.stop();stopped.begin();deadline=plan_time.monotonic()+5
+        while stopped.outcome is None and plan_time.monotonic()<deadline:
+            app.processEvents();stopped.poll();plan_time.sleep(.01)
+        assert stopped.outcome['status']=='cancelled' and stopped.outcome['operations_completed']==0
+        stopped.deleteLater();window.cwd.setText(old_cwd)
+    print('BOUNDED_PLAN_UI_PASS=True',flush=True)
+
     # A hidden outline consumes no scan timer; stale navigation cannot jump.
     window.tabs.setCurrentIndex(0)
-    window.set_sidebar_visible(True)
+    window.set_utilities_visible(True)
     window.editor.setPlainText('@step First\nWrite-Output 1\n@step Second')
     assert window.outline_dirty and window.outline_timer.isActive() and not window.outline.isEnabled()
     window.refresh_outline()
     assert window.outline.count()==2 and window.outline.isEnabled() and not window.outline_timer.isActive()
     assert window.outline.item(1).data(Qt.ItemDataRole.UserRole)==2
-    window.set_sidebar_visible(False)
+    window.set_utilities_visible(False)
     window.editor.setPlainText('\n@step New')
     assert window.outline_dirty and not window.outline_timer.isActive()
     window.refresh_outline(); assert window.outline.count()==2
-    window.set_sidebar_visible(True); assert window.outline_timer.isActive()
+    window.set_utilities_visible(True); assert window.outline_timer.isActive()
     window.refresh_outline()
     assert window.outline.count()==1 and window.outline.item(0).data(Qt.ItemDataRole.UserRole)==1
     window.jump(window.editor,window.outline.item(0)); assert window.editor.textCursor().blockNumber()==1
@@ -383,14 +567,14 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             window.editor.setReadOnly(False);start.assert_not_called()
         finally:
             window.editor.fileDropped.disconnect(dropped); window.editor.fileDropped.connect(window.load)
-    print('Qt editor responsiveness checks passed (coalesced outline, hidden sidebar, current offsets, drag feedback, read-only denial).')
+    print('Qt editor responsiveness checks passed (coalesced outline, hidden utilities, current offsets, drag feedback, read-only denial).')
     # Settings navigation shares existing controls; no policy mutation or network work.
     assert window.settings_menu.objectName() == 'workbench_settings'
-    assert window.settings_menu.menuAction() in window.more.menu().actions()
+    assert window.settings_nav.menu() is window.settings_menu
     assert window.safety_action in window.settings_menu.actions()
     assert window.safety_action not in window.more.menu().actions()
     actions = {a.objectName(): a for a in window.settings_menu.actions() if a.objectName()}
-    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_language', 'settings_mode', 'settings_light_theme', 'settings_reduced_motion', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
+    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_language', 'settings_light_theme', 'settings_reduced_motion', 'settings_wrap', 'settings_dense'}
     assert actions['settings_safety'].isEnabled()
     with patch.object(relay_qt, 'choose_language', return_value=None), patch.object(relay_qt, 'atomic_text') as save:
         actions['settings_language'].trigger()
@@ -399,7 +583,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         actions['settings_language'].trigger()
         assert json.loads(save.call_args.args[1])['language'] == 'ru'
         assert window.settings['language'] == 'ru'
-        assert window.ui_language == 'en' and window.more.text() == 'More'
+        assert window.ui_language == 'en' and window.more.text() == 'Tools'
     window.settings.pop('language', None)
     for name, control in [('settings_wrap', window.wrap), ('settings_dense', window.dense)]:
         action = actions[name]
@@ -407,41 +591,32 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert action.isCheckable() and action.isChecked() == initial
         action.trigger(); assert control.isChecked() != initial
         control.setChecked(initial); assert action.isChecked() == initial
-    initial = window.sidebar_action.isChecked()
-    window.sidebar_action.trigger(); assert window.tabs.isHidden() == initial
-    window.sidebar_action.trigger(); assert window.sidebar_action.isChecked() == initial
-    # Switch through Settings, keeping the editor, task inspector, output and safety intact.
+    window.set_utilities_visible(False);settle_layout()
+    assert window.utilities_action in window.more.menu().actions()
+    assert not window.utilities_action.isChecked()
+    window.utilities_action.trigger();settle_layout();assert window.auxiliary.isVisible()
+    window.auxiliary.close();settle_layout();assert window.auxiliary.isHidden() and not window.utilities_action.isChecked()
+    # The sole workspace keeps editor and output visible regardless of utility visibility.
     editor, output, inspector = window.editor, window.output, window.inspector_label
     editor.setPlainText('Write-Output test'); output.setPlainText('Existing output')
-    with patch.object(relay_qt, 'choose_workspace_mode', return_value=None), patch.object(relay_qt, 'atomic_text') as save:
-        actions['settings_mode'].trigger(); save.assert_not_called()
-    with patch.object(relay_qt, 'choose_workspace_mode', return_value='casual'), patch.object(relay_qt, 'atomic_text') as save, patch.object(window, 'start_process') as start:
-        actions['settings_mode'].trigger(); assert json.loads(save.call_args.args[1])['mode'] == 'casual'
-        assert window.mode == 'casual' and window.tabs.isHidden() and window.casual_hint.isVisible()
-        assert window.editor is editor and window.output is output and window.inspector_label is inspector
+    assert not hasattr(window,'mode_switch') and not hasattr(window,'casual_hint')
+    for visible in (False, True):
+        window.utilities_action.setChecked(visible);settle_layout()
         assert editor.isVisible() and output.isVisible() and window.safety_action.isEnabled()
-        assert editor.toPlainText() == 'Write-Output test' and output.toPlainText() == 'Existing output'
-        assert window.runbtn.isEnabled(); start.assert_not_called()
-    # The Casual card tracks actual state; it is not a separate executor.
-    assert window.casual_title.text() == tr('casual_edited')
-    assert tr('casual_review') in window.casual_hint.accessibleName()
-    with patch.object(window, 'start_process') as start:
-        window.set_busy(True)
-        assert tr('casual_run') in window.casual_hint.accessibleName()
-        window.casual_report_ready=True
-        window.set_busy(False)
-        assert tr('casual_result') in window.casual_hint.accessibleName()
-        assert 'not a test verdict' in window.casual_help.text()
-        editor.setPlainText('Write-Output changed')
-        assert tr('casual_review') in window.casual_hint.accessibleName()
-        editor.setPlainText('Write-Output test')
-        start.assert_not_called()
-    print('Qt Casual workflow card checks passed (review, running, report, invalidation).')
-    window.sidebar_action.trigger(); assert not window.tabs.isHidden()
-    window.sidebar_action.trigger(); assert window.tabs.isHidden()
-    with patch.object(relay_qt, 'choose_workspace_mode', return_value='advanced'), patch.object(relay_qt, 'atomic_text'):
-        actions['settings_mode'].trigger()
-        assert window.mode == 'advanced' and not window.tabs.isHidden() and window.casual_hint.isHidden()
+        assert window.tabs.isVisible()==visible
+        assert editor.toPlainText()=='Write-Output test' and output.toPlainText()=='Existing output'
+    window.set_utilities_visible(False);settle_layout()
+    assert window.main_split.count()==2 and window.auxiliary.isHidden()
+    print('OPTIONAL_UTILITIES_PASS=True')
+    with patch.object(window,'review_batch') as review, patch.object(window,'start_process') as execute:
+        packet={'schema':'command-relay/batch-v1','batch_id':'paste-batch','tasks':[{'task':{'schema':'command-relay/task-v1','task_id':'a','script':'Write-Output 1','assertions':{'exit_code':0}},'depends_on':[]}]}
+        window.route_input(json.dumps(packet).encode(),'Clipboard')
+        review.assert_called_once();execute.assert_not_called();assert editor.toPlainText()=='Write-Output test'
+    # A manual ordinary Run is authorization; no extra modal or real execution.
+    with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt,'REPORTS',Path(tmp)), patch.object(window,'start_process') as execute, patch.object(window,'begin') as begin, patch.object(QDialog,'exec',side_effect=AssertionError('unexpected modal')), patch.object(QMessageBox,'exec',side_effect=AssertionError('unexpected modal')):
+        window.cwd.setText(str(root))
+        window.runbtn.click();execute.assert_called_once();begin.assert_called_once();window.cleanup_temp()
+    print('SINGLE_WORKSPACE_UI_PASS=True')
     # Theme changes do not rebuild widgets, trigger execution or rewrite raw text.
     theme = actions['settings_light_theme']
     assert relay_qt.current_theme() == 'dark' and not theme.isChecked()
@@ -463,7 +638,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         error.assert_called_once()
     print('Qt theme checks passed (live switch, persistence, denied write, state and safety).')
     editor.clear(); output.clear()
-    print('Qt shared workspace mode checks passed (state, safety, independent sidebar, settings).')
+    print('Qt single workspace checks passed (state, safety, optional utilities, settings).')
     # Activity and output timers are idle when no commands are running.
     assert not window.timer.isActive() and not window.clock.isActive()
     motion = actions['settings_reduced_motion']
@@ -485,6 +660,31 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert not window.activity._timer.isActive() and window.activity.isHidden()
     window.set_status('ready', 'READY')
     print('Qt idle timer and reduced motion checks passed (no commands executed).')
+    # Personal skills are opened explicitly, and are never executed by discovery or import.
+    with tempfile.TemporaryDirectory() as td:
+        from command_relay import relay_features as skill_features
+        store=skill_features.UserSkillStore(Path(td).resolve()/'profile')
+        raw=json.dumps({'schema':'command-relay/skill-v1','id':'smoke','revision':1,'title':'Skill smoke','description':'Local fixture','instructions':'Review this task.','task':{'schema':'command-relay/task-v1','task_id':'skill-smoke','script':'Write-Output 1','assertions':{'exit_code':0}}}).encode()
+        store.install(raw)
+        assert window.skills_button.objectName()=='user_skills' and window.about_button.objectName()=='about'
+        dialog=relay_qt.UserSkillsDialog(window,store);dialog.list.setCurrentRow(0)
+        assert dialog.load_button.isEnabled() and 'Write-Output 1' in dialog.preview.toPlainText()
+        clipboard=QApplication.clipboard();old_clip=clipboard.text()
+        try:
+            with patch.object(window,'start_process') as execute:
+                dialog.copy_instructions();assert clipboard.text()=='Review this task.'
+                with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No):dialog.review_template()
+                assert dialog.chosen is None
+                with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes):dialog.review_template()
+                assert dialog.chosen.task_bytes==store.read('skill-smoke--v1.json').task_bytes
+                execute.assert_not_called()
+            dialog.refresh();dialog.list.setCurrentRow(0)
+            modified=json.loads(raw);modified['instructions']='changed after preview'
+            (store.folder/'skill-smoke--v1.json').write_text(json.dumps(modified),encoding='utf-8')
+            assert dialog.reviewed() is None
+        finally:
+            clipboard.setText(old_clip);dialog.close();dialog.deleteLater();app.processEvents()
+    print('Qt user skills checks passed (explicit review, copy, cancel, stale revision denial, no execution).')
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
     # Static AI rules copy is explicit and separate from session data.
     from command_relay.relay_terms import ai_rules_text
@@ -588,14 +788,15 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             for width, height in ((850, 560), (1180, 740)):
                 window.resize(width, height)
                 settle_layout()
-                for button in (window.openbtn, window.pastebtn, window.stopbtn, window.runbtn, window.more):
+                for button in (window.openbtn, window.pastebtn, window.stopbtn, window.runbtn, window.more,
+                               window.queue_nav, window.history_nav, window.skills_button, window.about_button, window.settings_nav, window.chat_button):
                     assert button.width() >= button.sizeHint().width(), (button.text(), button.width(), button.sizeHint().width())
                     assert window.rect().contains(button.rect().translated(button.mapTo(window, QPoint(0, 0))))
                 for row in (window.header_row, window.command_row):
                     a, b = (row.itemAt(i).geometry() for i in range(2))
                     assert not a.intersects(b), (a, b)
                     assert row.geometry().contains(a) and row.geometry().contains(b), (row.geometry(), a, b)
-                    if row.geometry().width() < row.sizeHint().width():
+                    if row.vertical or row.geometry().width() < row.sizeHint().width():
                         assert b.top() > a.bottom(), (a, b)
                 assert window.width() <= width and window.height() <= height
     finally:
@@ -605,7 +806,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         window.resize(original_size)
         settle_layout()
     for row in (window.header_row, window.command_row):
-        if row.geometry().width() >= row.sizeHint().width():
+        if not row.vertical and row.geometry().width() >= row.sizeHint().width():
             a, b = (row.itemAt(i).geometry() for i in range(2))
             assert a.top() <= b.bottom() and b.top() <= a.bottom(), (a, b)
     print('Qt compact action layout checks passed (long labels, LTR and RTL, adaptive groups).')
@@ -669,6 +870,8 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         task = {'schema': 'command-relay/task-v1', 'task_id': 'smoke-repeat',
                 'script': "Write-Output 'COUNT=15'", 'assertions': {'metrics': [{'key': 'COUNT', 'equals': 15}]}}
         window.import_data(json.dumps(task).encode(), 'smoke.json')
+        with patch.object(window,'tool_busy',True):
+            window.run();window.run_git('Git status');start.assert_not_called()
         window.run()
         try:
             assert start.call_count == 1
@@ -677,30 +880,16 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
                 header + 'COUNT=15\n@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T07:00:01\n', encoding='utf-8')
         finally:
             window.cleanup_temp()
-        for accept, expected_calls in [(False, 1), (True, 2)]:
-            errors = []
-            def interact_repeat():
-                dialog = QApplication.activeModalWidget()
-                try:
-                    assert isinstance(dialog, QMessageBox)
-                    assert dialog.windowTitle() == 'Review previous execution'
-                    assert 'PASS' in dialog.text()
-                    assert dialog.defaultButton() is dialog.button(QMessageBox.StandardButton.Cancel)
-                    if accept:
-                        next(b for b in dialog.buttons() if b.text() == 'Run anyway').click()
-                    else:
-                        dialog.defaultButton().click()
-                except Exception as exc:
-                    errors.append(exc)
-                    if dialog is not None:
-                        dialog.reject()
-            QTimer.singleShot(0, interact_repeat)
+        with patch.object(QDialog,'exec',side_effect=AssertionError('unexpected repeat modal')), patch.object(QMessageBox,'exec',side_effect=AssertionError('unexpected repeat modal')):
             try:
-                window.run()
-                assert not errors, errors
-                assert start.call_count == expected_calls
-            finally:
-                window.cleanup_temp()
+                window.runbtn.click();assert start.call_count==2
+            finally:window.cleanup_temp()
+        # A failed or incomplete previous outcome still requires explicit consent.
+        with patch.object(relay_qt.comparison,'previous_run',return_value={'status':'matched','report_file':'previous.txt','verdict':'INCOMPLETE'}), patch.object(QMessageBox,'exec',return_value=0):
+            window.run();assert start.call_count==2
+    assert window.detail.textFormat()==Qt.TextFormat.PlainText and window.liblabel.textFormat()==Qt.TextFormat.PlainText
+    print('REVIEW_REGRESSIONS_PASS=True')
+    print('DIRECT_MANUAL_RUN_PASS=True')
     # Unknown history is not a confirmed repeat; localize the reason and keep Cancel default.
     old_language=window.ui_language
     window.ui_language='ru'
@@ -724,7 +913,30 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert not errors, errors
     finally:
         window.ui_language=old_language
-    print('Qt repeated-task confirmation checks passed (cancel and explicit rerun; no commands executed).')
+    print('Qt uncertain history confirmation checks passed (default cancel; no commands executed).')
+    # Safety Gate: risk strings only, mock process launch; no hazardous script is executed.
+    with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt,'REPORTS',Path(tmp)), patch.object(window,'begin'), patch.object(window,'start_process') as start:
+        window.cwd.setText(str(root));window.import_data(json.dumps({'schema':'command-relay/task-v1','task_id':'safety-smoke','script':'Restart-Computer'}).encode(),'risk.json')
+        for accept in (False,True):
+            errors=[]
+            def decide():
+                dialog=QApplication.activeModalWidget()
+                try:
+                    assert isinstance(dialog,QDialog) and dialog.windowTitle()==tr('safety_gate_title',window.ui_language)
+                    buttons=dialog.findChildren(QPushButton);cancel=next(b for b in buttons if b.text()==tr('confirm_cancel',window.ui_language));assert cancel.isDefault()
+                    assert all(w.isReadOnly() for w in dialog.findChildren(QPlainTextEdit))
+                    if accept:next(b for b in buttons if b.text()==tr('safety_gate_once',window.ui_language)).click()
+                    else:cancel.click()
+                except Exception as exc:
+                    errors.append(exc)
+                    if dialog is not None:dialog.reject()
+            QTimer.singleShot(0,decide);window.run();assert not errors,errors
+            assert start.call_count==int(accept)
+            window.cleanup_temp()
+        # A changed editor after a modal review cannot use the approval.
+        with patch.object(relay_qt,'confirm_safety',side_effect=lambda parent,reviews:(window.editor.setPlainText('Stop-Computer') or reviews)), patch.object(window,'error'):
+            window.run();assert start.call_count==1
+    print('SAFETY_GATE_UI_PASS=True')
     # Session review uses the selected workspace, never executes a task or auto-copies.
     with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
             patch.object(window, 'start_tool') as tool:
@@ -744,6 +956,16 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         title, work = tool.call_args.args
         assert title == tr('result_session_title', 'ru')
         assert work()['schema'] == 'command-relay/session-v1'
+    # The legacy AI context chooser uses the canonical catalog; cancellation is inert.
+    def inspect_ai_context(dialog):
+        assert dialog.windowTitle()==tr('context_title','ru')
+        assert any(label.text()==tr('context_notice','ru') for label in dialog.findChildren(QLabel))
+        assert any(box.text()==tr('context_diff','ru') for box in dialog.findChildren(QCheckBox))
+        assert {tr(k,'ru') for k in ('context_add_files','context_remove','context_preview','mode_cancel')} <= {b.text() for b in dialog.findChildren(QPushButton)}
+        return QDialog.DialogCode.Rejected
+    with patch.object(window,'ui_language','ru'),patch.object(QDialog,'exec',inspect_ai_context),patch.object(window,'start_tool') as tool:
+        window.ai_context();tool.assert_not_called()
+    print('LEGACY_LOCALIZATION_UI_PASS=True')
     # Inspect the real dialog without modifying the task queue or running commands.
     from PySide6.QtWidgets import QComboBox
     def inspect_history(dialog):
@@ -771,7 +993,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             detail=dialog.findChild(QLabel,'historyAssertions');heading=dialog.findChild(QLabel,'historyHeading')
             assert table.rowCount()==3 and not table.item(0,0).flags() & Qt.ItemFlag.ItemIsSelectable
             assert table.item(1,1).text()=='<b>History title</b>' and heading.textFormat()==Qt.TextFormat.PlainText
-            assert heading.text()=='<b>History title</b>' and 'FAIL (1/2)' in detail.text()
+            assert heading.text()=='<b>History title</b>' and (relay_qt.verdict_text('FAIL','ru')+' (1/2)') in detail.text()
             assert op.isEnabled() and copy.isEnabled() and not compare.isEnabled()
             copy.click();assert copy_mock.call_args.args==('ai',folder/'report-20261125-010001-000000.txt')
             op.click();assert open_mock.call_args.args==(folder/'report-20261125-010001-000000.txt',)
@@ -783,16 +1005,14 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             table.clearSelection();assert not compare.isEnabled() and not copy.isEnabled()
             table.selectRow(2)
             for _ in range(5):app.processEvents()
-            assert 'PASS (2/2)' in detail.text()
-            assert table.isColumnHidden(3)==(window.mode=='casual')
+            assert (relay_qt.verdict_text('PASS','ru')+' (2/2)') in detail.text()
+            assert not table.isColumnHidden(3)
             search=dialog.findChild(QLineEdit,'historySearch');timer=dialog.findChild(QTimer,'historyFilterTimer')
             search.setText('task-0');timer.stop();timer.timeout.emit();assert table.rowCount()==2 and table.item(1,1).text()=='<b>History title</b>'
             search.setText('not-found');timer.stop();timer.timeout.emit();assert table.rowCount()==0 and not copy.isEnabled() and not compare.isEnabled()
             return QDialog.DialogCode.Rejected
         with patch.object(window,'ui_language','ru'),patch.object(relay_qt,'REPORTS',folder),patch.object(QDialog,'exec',inspect_redesigned_history),patch.object(relay_qt.threading,'Thread',ImmediateHistoryThread),patch.object(window,'open_path') as open_mock,patch.object(window,'copy_report') as copy_mock:
-            for mode in ('casual','advanced'):
-                copy_mock.reset_mock();open_mock.reset_mock()
-                with patch.object(window,'mode',mode):window.history()
+            window.history()
         def inspect_paged_history(dialog):
             for _ in range(5):app.processEvents()
             table=dialog.findChild(QTableWidget,'historyRuns');more=dialog.findChild(QPushButton,'historyShowMore')
@@ -808,7 +1028,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
             return QDialog.DialogCode.Rejected
         with patch.object(relay_qt.view,'HISTORY_PAGE_SIZE',1),patch.object(relay_qt,'REPORTS',folder),patch.object(QDialog,'exec',inspect_paged_history),patch.object(relay_qt.threading,'Thread',ImmediateHistoryThread):
             window.history()
-    print('Qt redesigned history checks passed (grouping, actual assertions, selection, explicit copy, raw cancel, both modes, progressive rows and full-snapshot search).')
+    print('Qt redesigned history checks passed (grouping, actual assertions, selection, explicit copy, raw cancel, legacy settings, progressive rows and full-snapshot search).')
     print('Qt session review entry point checks passed (local-only preview).')
 
     # Mock all CLI traffic. Exercise the actual dialog, worker completion and confirmation.
@@ -888,7 +1108,130 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         dialog.reject(); dialog.deleteLater(); app.processEvents()
     print('Qt Russian GitHub manager checks passed (raw snapshot, cancel default, unknown outcome).')
     print('Qt GitHub PR manager checks passed (mocked list, inspect, cancel, merge and unknown outcome; no network writes).')
+    # No browser initialization or network on standard smoke. Opt-in tests use
+    # a disposable loopback server and never authenticate with a provider.
+    assert window.browser_bridge is None
+    if '--browser-bridge' in sys.argv:
+        import http.server, threading, time
+        from PySide6.QtCore import QUrl
+        packet=json.dumps({'schema':'command-relay/task-v1','task_id':'browser-smoke','script':'Write-Output 1','assertions':{'exit_code':0}}).encode()
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path=='/task':
+                    body=packet;self.send_response(200);self.send_header('Content-Type','application/json');self.send_header('Content-Disposition','attachment; filename="task.json"')
+                else:
+                    body=b'<html><body><a id="task" href="/task">Task</a><textarea id="chat"></textarea><textarea id="other"></textarea></body></html>';self.send_response(200);self.send_header('Content-Type','text/html')
+                self.send_header('Content-Length',str(len(body)));self.end_headers();self.wfile.write(body)
+            def log_message(self,*args):pass
+        def wait_until(predicate):
+            deadline=time.monotonic()+20
+            while not predicate() and time.monotonic()<deadline:app.processEvents();time.sleep(.02)
+            assert predicate(), 'Browser smoke timed out'
+        with http.server.ThreadingHTTPServer(('127.0.0.1',0),Handler) as server:
+            worker=threading.Thread(target=server.serve_forever,daemon=True);worker.start()
+            try:
+                with patch.object(window,'error',side_effect=AssertionError('Browser unavailable')):window.open_browser_bridge()
+                bridge=window.browser_bridge;assert bridge is not None and bridge.profile.isOffTheRecord()
+                assert bridge.page.chooseFiles(None,[],[])==[]
+                loaded=[];bridge.web.loadFinished.connect(loaded.append)
+                url=f'http://127.0.0.1:{server.server_port}/';bridge.address.setText(url);bridge.navigate()
+                wait_until(lambda:bool(loaded));assert loaded[-1]
+                bridge.page.runJavaScript("document.getElementById('task').click()")
+                wait_until(lambda:bridge.pending is not None)
+                assert bridge.pending[0]==packet and bridge.transfer is None
+                with patch.object(window,'route_input') as route,patch.object(window,'start_process') as start:
+                    with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No):bridge.review()
+                    route.assert_not_called();assert bridge.pending is not None
+                    old_cwd=window.cwd.text()
+                    def stale_import(*args):window.cwd.setText(old_cwd+'-changed');return QMessageBox.StandardButton.Yes
+                    with patch.object(QMessageBox,'question',side_effect=stale_import):bridge.review()
+                    route.assert_not_called();assert bridge.pending is not None;window.cwd.setText(old_cwd)
+                    with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes):bridge.review()
+                    route.assert_called_once_with(packet,'task.json',relay_qt.sha(packet));start.assert_not_called()
+                    assert bridge.pending is None
+                    # Same-URL reload invalidates pending task, not just draft text.
+                    bridge.pending=(packet,'task.json',bridge.page.url().toString());bridge.review_button.setEnabled(True)
+                    bridge.navigation_started();assert bridge.pending is None and not bridge.review_button.isEnabled()
+                with tempfile.TemporaryDirectory() as tmp:
+                    report=Path(tmp)/'report.txt';report.write_text('COMMAND RELAY REPORT\nWorking directory: '+tmp+'\n\n@step 01 — Check\n',encoding='utf-8')
+                    original=window.current;window.current=report
+                    try:
+                        with patch.object(window,'copy_report') as copy:
+                            with patch.object(QMessageBox,'exec',return_value=QMessageBox.StandardButton.No):bridge.copy_result()
+                            copy.assert_not_called()
+                            def stale_copy(box):
+                                assert box.defaultButton().text() and box.textFormat()==Qt.TextFormat.PlainText
+                                assert report.name in box.text() and '127.0.0.1' in box.text()
+                                with report.open('a',encoding='utf-8') as stream:stream.write('Changed\n')
+                                return QMessageBox.StandardButton.Yes
+                            with patch.object(QMessageBox,'exec',stale_copy):bridge.copy_result()
+                            copy.assert_not_called()
+                            def reloaded_copy(box):
+                                bridge.navigation_started();return QMessageBox.StandardButton.Yes
+                            with patch.object(QMessageBox,'exec',new=reloaded_copy):bridge.copy_result()
+                            copy.assert_not_called()
+                            with patch.object(QMessageBox,'exec',return_value=QMessageBox.StandardButton.Yes):bridge.copy_result()
+                            copy.assert_called_once_with('ai',report)
+                        def js(code):
+                            values=[];bridge.page.runJavaScript(code,values.append);wait_until(lambda:bool(values));return values[0]
+                        def reset_chat():
+                            js("document.getElementById('chat').value='';document.getElementById('other').value='';document.getElementById('chat').focus();true")
+                        clipboard=app.clipboard().text()
+                        reset_chat()
+                        with patch.object(QDialog,'exec',return_value=QDialog.DialogCode.Rejected):
+                            bridge.prepare_draft();wait_until(lambda:bridge.draft_request is None)
+                        assert js("document.getElementById('chat').value")==''
+                        reset_chat()
+                        with patch.object(QDialog,'exec',side_effect=RuntimeError('Simulated review failure')) as failed_review:
+                            bridge.prepare_draft();wait_until(lambda:bridge.draft_request is None)
+                            failed_review.assert_called_once_with()
+                        assert bridge.draft_button.isEnabled()
+                        assert js("document.getElementById('chat').value")==''
+                        assert js("document.getElementById('other').value")==''
+                        reset_chat()
+                        def stale_draft(dialog):
+                            js("document.getElementById('other').focus();true")
+                            return QDialog.DialogCode.Accepted
+                        with patch.object(QDialog,'exec',new=stale_draft):
+                            bridge.prepare_draft();wait_until(lambda:bridge.draft_request is None)
+                        assert js("document.getElementById('chat').value")=='' and js("document.getElementById('other').value")==''
+                        reset_chat();js("document.getElementById('chat').value='user draft';true")
+                        with patch.object(QDialog,'exec',side_effect=AssertionError('Nonempty target must not prompt')) as nonempty_review:
+                            bridge.prepare_draft();wait_until(lambda:bridge.draft_request is None)
+                            nonempty_review.assert_not_called()
+                        assert js("document.getElementById('chat').value")=='user draft'
+                        reset_chat();reviewed=[]
+                        def accept_draft(dialog):
+                            from PySide6.QtWidgets import QPlainTextEdit
+                            editor=dialog.findChild(QPlainTextEdit);assert editor.isReadOnly()
+                            reviewed.append(editor.toPlainText());return QDialog.DialogCode.Accepted
+                        with patch.object(QDialog,'exec',new=accept_draft):
+                            bridge.prepare_draft();wait_until(lambda:bridge.draft_request is None)
+                        assert len(reviewed)==1 and json.loads(reviewed[0])['schema']=='command-relay/result-v1'
+                        assert js("document.getElementById('chat').value")==reviewed[0]
+                        assert app.clipboard().text()==clipboard
+                        print('BROWSER_DRAFT_REVIEW_PASS=True',flush=True)
+                    finally:window.current=original
+                print('BROWSER_HANDOFF_REVIEW_PASS=True',flush=True)
+                from shiboken6 import isValid
+                web,page,profile=bridge.web,bridge.page,bridge.profile
+                window.close_browser_bridge();bridge.shutdown();app.processEvents()
+                assert window.browser_bridge is None
+                assert not any(isValid(obj) for obj in (web,page,profile))
+                # Repeat the lifecycle with a fresh profile, not the destroyed one.
+                window.open_browser_bridge();fresh=window.browser_bridge
+                assert fresh is not None and fresh is not bridge and fresh.profile.isOffTheRecord()
+                loaded=[];fresh.web.loadFinished.connect(loaded.append)
+                fresh.address.setText(url);fresh.navigate();wait_until(lambda:bool(loaded));assert loaded[-1]
+                web,page,profile=fresh.web,fresh.page,fresh.profile
+                window.close_browser_bridge();app.processEvents()
+                assert not any(isValid(obj) for obj in (web,page,profile))
+                assert window.browser_bridge is None
+                print('BROWSER_BRIDGE_LIFECYCLE_PASS=True',flush=True)
+            finally:server.shutdown();worker.join(timeout=3)
+        print('BROWSER_BRIDGE_NATIVE_PASS=True')
     window.hide()
     window.deleteLater()
     app.processEvents()
+visual_acceptance()
 print('Qt startup smoke check passed (native batch commands explicitly enabled).' if '--native-batch' in sys.argv else 'Qt startup smoke check passed (no commands executed).')

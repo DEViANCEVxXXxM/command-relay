@@ -4,18 +4,18 @@ import time
 from string import Template
 STARTUP_T0 = time.perf_counter()
 import sys, os, pathlib, json, codecs, tempfile, subprocess, threading, shutil, difflib, re, datetime, queue
-from PySide6.QtCore import Qt, QProcess, QTimer, QUrl, Signal, QObject, QEvent, QSize, QRect, QPropertyAnimation
-from PySide6.QtGui import QColor, QFont, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat, QDesktopServices, QShortcut, QKeySequence, QPainter, QIcon, QPalette
-from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog,QSizePolicy,QLayout,QStyle,QRadioButton,QButtonGroup,QGraphicsOpacityEffect)
+from PySide6.QtCore import Qt, QProcess, QTimer, QUrl, Signal, QObject, QEvent, QSize, QRect
+from PySide6.QtGui import QColor, QFont, QTextCursor, QTextDocument, QSyntaxHighlighter, QTextCharFormat, QDesktopServices, QShortcut, QKeySequence, QPainter, QIcon, QPalette, QFontDatabase, QRawFont
+from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QListWidgetItem,QFrame,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog,QSizePolicy,QLayout,QStyle,QDockWidget)
 from .relay_core import (
     ASSETS, GIT_ACTIONS, MARK, PACKET_LIMIT, REPORTS, ROOT, SETTINGS,
     atomic_text, compact_report, copy_mode, file_hash, git_args, load_input, load_batch,
-    prepare, read_settings, sha, BatchExecutionSession,
+    prepare, read_settings, sha, BatchExecutionSession, DispatchReview, SafetyGate,
 )
 from .relay_version import VERSION
-from .relay_terms import dialog_result_text, casual_stage, casual_task_title, ai_rules_text
+from .relay_terms import export_mode_text, verdict_text, dialog_result_text, ai_rules_text
 from .relay_terms import (confirm_usage_terms, choose_language, saved_language, startup_language, tr,
-                          MODES, DEFAULT_MODE, saved_mode, startup_mode, sidebar_preference)
+                          workspace_settings, repeat_requires_confirmation, safety_labels, locale_direction)
 from .relay_windows import apply_neutral_chrome, set_app_identity
 from . import relay_features as features
 from . import relay_intelligence as intelligence
@@ -50,30 +50,57 @@ class NeutralChrome(QObject):
 
 
 # Shared workbench geometry and motion tokens.
-WINDOW_MARGINS = (12, 9, 12, 8)
-LAYOUT_GAP = 7
-SPLITTER_WIDTH = 5
+WINDOW_MARGINS = (16, 16, 16, 16)
+LAYOUT_GAP = 12
+CONTROL_GAP = 8
+SPLITTER_WIDTH = 8
+PANE_HEADER_HEIGHT = 28
 ACTIVITY_INTERVAL_MS = 33
 OUTPUT_INTERVAL_MS = 80
 CLOCK_INTERVAL_MS = 1000
 OUTLINE_DELAY_MS = 120
-CONTROL_RADIUS = 5
+CONTROL_RADIUS = 7
 CONTROL_PADDING = '6px 12px'
 
 _THEME_QSS = Template("""
-QWidget { background:$canvas; color:$text; font-family:"Segoe UI"; font-size:12px; }
-QLabel[role="brand"] { font-size:20px; font-weight:700; }
-QLabel[role="section"] { font-weight:600; color:$muted; }
+QWidget { background:$canvas; color:$text; font-size:13px; }
+QLabel { background:transparent; }
+QLabel[role="brand"] { font-size:19px; font-weight:600; }
+QLabel[role="section"] { font-size:12px; font-weight:600; color:$muted; }
 QLabel[role="muted"] { color:$muted; }
-QWidget#casualCard { background:$surface; border:1px solid $border; border-radius:$radius; }
-QLabel[role="casualTitle"] { font-size:14px; font-weight:600; background:transparent; }
-QLabel[role="casualHelp"] { color:$muted; background:transparent; }
+QFrame#navigationSurface { background:$surface; border:1px solid $border; border-radius:10px; }
+QFrame#navigationSurface QWidget#navigationGroup { background:transparent; }
+QFrame#navigationSurface QPushButton { min-height:18px; padding:6px 12px; text-align:center; }
+QFrame#navigationSurface QPushButton[menuNav="true"] { padding-right:24px; }
+QFrame#navigationSurface QPushButton::menu-indicator { subcontrol-origin:padding; subcontrol-position:center right; right:7px; }
+QFrame#navigationSurface QPushButton[role="nav"]:hover { background:$raised; }
+QFrame#navigationSurface QPushButton[role="nav"]:focus { border-color:$focus; }
+QFrame#navigationSurface QPushButton[role="navCurrent"] { background:$selection; color:$selected_text; border:1px solid transparent; font-weight:500; }
+QFrame#navigationSurface QPushButton[role="navCurrent"]:focus { border-color:$focus; }
+QLabel[role="risk"] { padding:9px 10px; border:1px solid $border; border-radius:7px; }
+QLabel[role="paneTitle"] { font-size:13px; font-weight:600; }
+QLineEdit { min-height:18px; padding:6px 8px; }
+QPlainTextEdit { padding:8px; }
+QPushButton[role="secondary"] { background:transparent; border:1px solid $border; }
+QPushButton[role="secondary"]:hover { background:$raised; }
+QPushButton[role="secondary"]:focus { border-color:$focus; }
+QLabel[role="historyTitle"] { font-size:23px; font-weight:600; }
+QPushButton[role="nav"] { background:transparent; border:1px solid transparent; font-weight:500; }
+QPushButton[role="nav"]:hover { background:$raised; }
+QPushButton[role="nav"]:focus { border-color:$focus; }
+QPushButton[role="nav"]:disabled { color:$disabled; }
+QFrame#sectionDivider { background:$border; border:0; max-height:1px; }
+QListWidget#sessionRuns { border:0; background:$canvas; }
+QListWidget#sessionRuns::item { padding:10px 6px; border-bottom:1px solid $border; }
+QListWidget#sessionRuns::item:selected { background:$selection; color:$selected_text; }
+QListWidget#sessionRuns:focus { border:1px solid $focus; }
 QLineEdit,QPlainTextEdit,QListWidget,QTableWidget,QComboBox {
     background:$surface; border:1px solid $border; border-radius:$radius;
     selection-background-color:$selection; selection-color:$selected_text;
 }
-QPlainTextEdit[role="code"] { font-family:Consolas,monospace; font-size:13px; }
-QPushButton { background:$raised; border:1px solid transparent; border-radius:$radius; padding:$padding; }
+QPlainTextEdit[role="code"] { font-size:13px; }
+QPushButton { min-height:18px; background:$raised; border:1px solid transparent; border-radius:$radius; padding:$padding; }
+QPushButton[role="paneAction"] { min-height:16px; padding:4px 10px; }
 QPushButton:hover { background:$hover; }
 QPushButton:pressed { background:$border; }
 QPushButton:disabled { color:$disabled; background:$canvas; }
@@ -86,10 +113,11 @@ QMenu::item:selected { background:$selection; color:$selected_text; }
 QMenu::item:disabled { color:$disabled; }
 QMenu::separator { height:1px; background:$border; margin:4px 6px; }
 QTabWidget::pane { border:0; }
-QTabBar::tab { padding:7px 12px; background:$raised; color:$muted; }
-QTabBar::tab:selected { background:$surface; color:$text; }
-QSplitter::handle { background:$border; }
-QSplitter::handle:hover { background:$accent; }
+QTabBar::tab { padding:8px 12px; background:$canvas; color:$muted; border-bottom:2px solid transparent; }
+QTabBar::tab:selected { background:$surface; color:$text; border-bottom:2px solid $accent; }
+QSplitter::handle { background:$canvas; }
+QSplitter::handle:hover { background:$raised; }
+QSplitter::handle:pressed { background:$border; }
 QHeaderView::section { background:$raised; border:0; padding:6px; }
 QScrollBar:vertical { width:9px; background:$canvas; }
 QScrollBar::handle:vertical { background:$thumb; min-height:24px; border-radius:4px; }
@@ -98,7 +126,7 @@ QScrollBar:horizontal { height:9px; background:$canvas; }
 QScrollBar::handle:horizontal { background:$thumb; min-width:24px; border-radius:4px; }
 QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal { width:0; }
 QPushButton:focus,QLineEdit:focus,QListWidget:focus,QTableWidget:focus,QComboBox:focus,QPlainTextEdit:focus { border:1px solid $focus; }
-QCheckBox:focus,QRadioButton:focus,QTabBar::tab:focus { outline:1px solid $focus; }
+QCheckBox:focus,QTabBar::tab:focus { outline:1px solid $focus; }
 QPlainTextEdit[fileDropActive="true"] { border:1px solid $accent; background:$raised; }
 QToolTip { background:$surface; color:$text; border:1px solid $border; }
 """)
@@ -113,9 +141,59 @@ def colors():
     return view.theme_colors(current_theme())
 
 
+# Do not force a family in QSS: Qt needs its platform font matching/fallback.
+UI_GLYPHS = 'Command Relay 0123456789 Проверка задачи Ёё'
+CODE_GLYPHS = 'Write-Output 0123456789 Пример'
+
+
+def font_has_glyphs(font, sample):
+    raw = QRawFont.fromFont(font)
+    return raw.isValid() and all(raw.supportsCharacter(ord(ch)) for ch in sample if not ch.isspace())
+
+
+def configure_fonts():
+    """Prefer installed, verified system fonts; no downloaded/bundled fonts."""
+    app = QApplication.instance()
+    if app.property('relay_fonts_configured'):
+        return bool(app.property('relay_font_coverage'))
+    def choose(candidates, sample, fixed=False):
+        families = set(QFontDatabase.families())
+        for family in candidates:
+            if family not in families:continue
+            f=QFont(family);f.setPixelSize(13)
+            if fixed:f.setStyleHint(QFont.StyleHint.Monospace)
+            if font_has_glyphs(f,sample):return f
+        return None
+    general=QFontDatabase.systemFont(QFontDatabase.SystemFont.GeneralFont)
+    fixed=QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+    ui_names=(general.family(),'Segoe UI','Arial','DejaVu Sans','Noto Sans')
+    code_names=(fixed.family(),'Consolas','Cascadia Mono','Courier New','DejaVu Sans Mono')
+    ui=choose(ui_names,UI_GLYPHS);code=choose(code_names,CODE_GLYPHS,True)
+    if sys.platform=='win32' and (ui is None or code is None):
+        # Some headless Qt platform plugins expose no usable system font.
+        # Register only known Windows fonts, in this process, never install them.
+        system_fonts=pathlib.Path(os.environ.get('WINDIR',r'C:\Windows'))/'Fonts'
+        for filename in ('segoeui.ttf','segoeuib.ttf','arial.ttf','consola.ttf','cour.ttf'):
+            path=system_fonts/filename
+            if path.is_file():QFontDatabase.addApplicationFont(str(path))
+        ui=ui or choose(ui_names,UI_GLYPHS);code=code or choose(code_names,CODE_GLYPHS,True)
+    if ui is not None:app.setFont(ui)
+    app.setProperty('relay_code_family',code.family() if code is not None else fixed.family())
+    app.setProperty('relay_font_coverage',ui is not None and code is not None)
+    app.setProperty('relay_fonts_configured',True)
+    return bool(app.property('relay_font_coverage'))
+
+
+def code_font():
+    font=QFont(str(QApplication.instance().property('relay_code_family') or QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont).family()))
+    font.setStyleHint(QFont.StyleHint.Monospace);font.setPixelSize(13)
+    return font
+
+
 def apply_theme(theme):
     """One application-wide palette, no fades or widget reconstruction."""
     app = QApplication.instance()
+    configure_fonts()
     theme = view.saved_theme({'theme': theme})
     if app.property('relay_theme') == theme:
         return
@@ -144,7 +222,7 @@ class ActivityBar(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setFixedHeight(4)
-        self.setAccessibleName('Execution in progress (indeterminate)')
+        self.setAccessibleName(tr('activity_indeterminate',getattr(parent,'ui_language','en')))
         self._epoch = 0.0
         self._running = False
         self._reduced_motion = False
@@ -195,14 +273,30 @@ class ActivityBar(QWidget):
         painter.end()
 
 
-STATUS_COLORS = {
-    'ready': '#145a98', 'running': '#005f9e', 'success': '#237346',
-    'failed': '#a12632', 'cancelled': '#80550d', 'stopping': '#80550d',
-}
 COPY_TIP = 'Click: Copy AI (best-effort secret masking)\nShift + click: Copy text (masked)\nCtrl + click: Copy RAW full report (unmasked)\nCtrl takes priority if both are held.'
 
+class ReportCopyButton(QPushButton):
+    """Read modifiers from the activating mouse release, never a stale global state."""
+    def __init__(self, title, action):
+        super().__init__(title)
+        self._copy_mode = 'ai'
+        self.clicked.connect(lambda checked=False: action(self._copy_mode))
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mouseReleaseEvent(event)
+        mods = event.modifiers()
+        self._copy_mode = copy_mode(bool(mods & Qt.KeyboardModifier.ControlModifier),
+                                    bool(mods & Qt.KeyboardModifier.ShiftModifier))
+        try:
+            super().mouseReleaseEvent(event)
+        finally:
+            self._copy_mode = 'ai'
+
+
 class Highlight(QSyntaxHighlighter):
-    def __init__(self, document):
+    def __init__(self, document, log=False):
+        self.log = log
         self.tokens = colors()
         super().__init__(document)
 
@@ -212,6 +306,11 @@ class Highlight(QSyntaxHighlighter):
 
     def highlightBlock(self,text):
         t=text.strip(); color=None; c=self.tokens
+        if self.log:
+            role=view.semantic_log_role(text);color=c.get(role)
+            if color:
+                fmt=QTextCharFormat();fmt.setForeground(QColor(color));self.setFormat(0,len(text),fmt)
+            return
         if MARK.match(t): color=c['info']
         elif re.search(r'\b\w*PASS=False\b',t) or re.match(r'^(error[\[:]|Runner error:|Process exit code: (?!0$))',t,re.I): color=c['error']
         elif re.search(r'\b\w*PASS=True\b',t) or t=='Process exit code: 0': color=c['success']
@@ -272,6 +371,7 @@ class WorkerSignals(QObject):
     copyDone=Signal(object,object,object)
     warmDone=Signal(object,object)
     historyDone=Signal(object,object,object)
+    sessionRunsDone=Signal(object,object,object)
 
 class UpdatesDialog(QDialog):
     """Explicit lookup, verification and optional guarded exit handoff."""
@@ -548,8 +648,9 @@ class AdaptiveActionRow(QLayout):
     def __init__(self, leading, trailing):
         super().__init__()
         self._items = []
+        self.vertical = False
         self.setContentsMargins(0, 0, 0, 0)
-        self.setSpacing(7)
+        self.setSpacing(CONTROL_GAP)
         self.addWidget(leading)
         self.addWidget(trailing)
 
@@ -565,17 +666,19 @@ class AdaptiveActionRow(QLayout):
 
     def sizeHint(self):
         sizes = [item.sizeHint() for item in self._items]
+        if self.vertical:return QSize(max((s.width() for s in sizes),default=0),sum(s.height() for s in sizes)+self.spacing()*max(0,len(sizes)-1))
         return QSize(sum(s.width() for s in sizes) + self.spacing() * max(0, len(sizes)-1),
                      max((s.height() for s in sizes), default=0))
 
     def minimumSize(self):
+        if self.vertical:return self.sizeHint()
         sizes = [item.minimumSize() for item in self._items]
         return QSize(max((s.width() for s in sizes), default=0),
                      max((s.height() for s in sizes), default=0))
 
     def heightForWidth(self, width):
         sizes = [item.sizeHint() for item in self._items]
-        if width >= self.sizeHint().width(): return self.sizeHint().height()
+        if self.vertical or width >= self.sizeHint().width(): return self.sizeHint().height()
         return sum(s.height() for s in sizes) + self.spacing() * max(0, len(sizes)-1)
 
     def minimumHeightForWidth(self, width): return self.heightForWidth(width)
@@ -584,6 +687,13 @@ class AdaptiveActionRow(QLayout):
         super().setGeometry(rect)
         if not self._items: return
         direction = self.parentWidget().layoutDirection()
+        if self.vertical:
+            y=rect.y()
+            for index,item in enumerate(self._items):
+                height=item.sizeHint().height()
+                if index==len(self._items)-1:y=max(y,rect.bottom()-height+1)
+                item.setGeometry(QRect(rect.x(),y,rect.width(),height));y+=height+self.spacing()
+            return
         wrap = rect.width() < self.sizeHint().width()
         y = rect.y()
         for index, item in enumerate(self._items):
@@ -598,91 +708,52 @@ class AdaptiveActionRow(QLayout):
 
 def action_group():
     widget = QWidget()
-    layout = QHBoxLayout(widget)
+    layout = QBoxLayout(QBoxLayout.Direction.LeftToRight,widget)
     layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(CONTROL_GAP)
     return widget, layout
 
 
-class ModePreview(QWidget):
-    """Small inert schematic. No editor, timer, process or external resources."""
-    def __init__(self, mode, parent=None):
-        super().__init__(parent)
-        self.mode = mode
-        self.selected = False
-        self.setMinimumSize(190, 112)
-        self.setAccessibleName(mode.capitalize() + ' workspace preview')
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        c = colors()
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        w, h = self.width(), self.height()
-        p.setPen(QColor(c['accent'] if self.selected else c['border']))
-        p.setBrush(QColor(c['surface']))
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -2, -2), 5, 5)
-        p.fillRect(8, 9, 42, 4, QColor(c['muted']))
-        p.fillRect(w-42, 7, 32, 10, QColor(c['accent']))
-        p.fillRect(8, 22, w-16, 7, QColor(c['border']))
-        left = 8
-        if self.mode == 'advanced':
-            p.fillRect(8, 36, 40, h-45, QColor(c['raised']))
-            for y in range(44, h-12, 12):
-                p.fillRect(13, y, 27, 3, QColor(c['muted']))
-            left = 54
-        p.fillRect(left, 36, w-left-8, 25, QColor(c['raised']))
-        p.fillRect(left, 66, w-left-8, h-75, QColor(c['raised']))
-        for y, fraction in ((43, .60), (51, .38), (74, .70), (82, .45), (90, .55)):
-            p.fillRect(left+5, y, max(1, int((w-left-18)*fraction)), 3, QColor(c['muted']))
-        p.end()
+def align_workbench_row(layout):
+    """Center controls vertically without changing stretch or horizontal alignment."""
+    for index in range(layout.count()):
+        widget = layout.itemAt(index).widget()
+        if widget is not None:
+            layout.setAlignment(widget, Qt.AlignmentFlag.AlignVCenter)
 
 
-def choose_workspace_mode(current=None, parent=None, language='en', reduced_motion=False):
-    dialog = QDialog(parent)
-    dialog.setObjectName('workspace_mode_dialog')
-    dialog.setWindowTitle(tr('mode_title', language))
+def configure_pane_title(label):
+    label.setProperty('role', 'paneTitle')
+    label.setTextFormat(Qt.TextFormat.PlainText)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeading | Qt.AlignmentFlag.AlignVCenter)
+    label.setMinimumHeight(PANE_HEADER_HEIGHT)
+
+
+def confirm_safety(parent, reviews):
+    """Explicit one-use approvals for the exact reviewed payload(s)."""
+    risky = [(review, SafetyGate.inspect(review)) for review in reviews]
+    risky = [(review, info) for review, info in risky if info['level'] == 'high']
+    if not risky: return ()
+    ui = parent.ui
+    dialog = QDialog(parent); dialog.setWindowTitle(ui('safety_gate_title')); dialog.resize(820, 620)
     layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(16, 16, 16, 16)
-    layout.setSpacing(12)
-    heading = QLabel(tr('mode_heading', language)); heading.setWordWrap(True); layout.addWidget(heading)
-    cards = QHBoxLayout(); group = QButtonGroup(dialog); previews = {}; radios = {}
-    for mode in MODES:
-        column = QVBoxLayout()
-        radio = QRadioButton(tr('mode_'+mode, language)); radio.setObjectName('mode_'+mode)
-        radio.setAccessibleDescription(tr('mode_'+mode+'_desc', language))
-        group.addButton(radio); radios[mode] = radio
-        preview = ModePreview(mode); previews[mode] = preview
-        description = QLabel(tr('mode_'+mode+'_desc', language)); description.setWordWrap(True)
-        column.addWidget(radio); column.addWidget(preview); column.addWidget(description); column.addStretch()
-        cards.addLayout(column, 1)
-    layout.addLayout(cards)
-    note = QLabel(tr('mode_safety', language)); note.setWordWrap(True); layout.addWidget(note)
-    buttons = QHBoxLayout(); buttons.addStretch()
-    cancel = QPushButton(tr('mode_cancel', language)); cancel.setObjectName('mode_cancel'); cancel.clicked.connect(dialog.reject)
-    proceed = QPushButton(tr('mode_continue', language)); proceed.setObjectName('mode_continue'); proceed.clicked.connect(dialog.accept)
-    proceed.setDefault(True); buttons.addWidget(cancel); buttons.addWidget(proceed); layout.addLayout(buttons)
-    # Only animate a selection change. No animation on initial paint or when reduced motion is enabled.
-    animation = QPropertyAnimation(dialog); animation.setPropertyName(b'opacity'); animation.setDuration(150)
-    effects = {}
-    if not reduced_motion:
-        for mode, preview in previews.items():
-            effect = QGraphicsOpacityEffect(preview); effect.setOpacity(1.0); preview.setGraphicsEffect(effect); effects[mode] = effect
-    def select(mode, animate):
-        animation.stop()
-        for key, preview in previews.items():
-            preview.selected = key == mode; preview.update()
-            if key in effects: effects[key].setOpacity(1.0)
-        if animate and mode in effects and dialog.isVisible():
-            animation.setTargetObject(effects[mode]); animation.setStartValue(0.70); animation.setEndValue(1.0); animation.start()
-    initial = current if current in MODES else DEFAULT_MODE
-    radios[initial].setChecked(True); select(initial, False)
-    for mode, radio in radios.items():
-        radio.toggled.connect(lambda checked, key=mode: select(key, True) if checked else None)
-    dialog.resize(500, 280)
-    result = dialog.exec()
-    animation.stop()
-    if result != QDialog.DialogCode.Accepted:
-        return None
-    return next((mode for mode, radio in radios.items() if radio.isChecked()), None)
+    notice = QLabel(ui('safety_gate_notice')); notice.setWordWrap(True); layout.addWidget(notice)
+    tasks = QComboBox(); tasks.setAccessibleName(ui('safety_gate_task')); layout.addWidget(tasks)
+    for review, info in risky: tasks.addItem(review.task_id or ui('safety_gate_task'))
+    details = QPlainTextEdit(); details.setReadOnly(True); details.setAccessibleName(ui('safety_gate_title')); layout.addWidget(details, 1)
+    code = QPlainTextEdit(); code.setReadOnly(True); code.setAccessibleName(ui('batch_script')); layout.addWidget(code, 2)
+    seen = set()
+    def select(index):
+        seen.add(index)
+        review, info = risky[index]
+        details.setPlainText(review.workspace + '\nSHA-256: ' + sha(review.prepared) + '\n' + safety_labels(ui, info))
+        code.setPlainText(review.prepared.decode('utf-8-sig'))
+    row = QHBoxLayout(); row.addStretch(); cancel = QPushButton(ui('confirm_cancel')); cancel.setDefault(True); cancel.clicked.connect(dialog.reject); row.addWidget(cancel)
+    approve = QPushButton(ui('safety_gate_once')); approve.setAutoDefault(False); approve.clicked.connect(dialog.accept); row.addWidget(approve); layout.addLayout(row)
+    def update(index):
+        select(index); approve.setEnabled(len(seen)==len(risky))
+    tasks.currentIndexChanged.connect(update); update(0)
+    return tuple(review for review, _ in risky) if dialog.exec() == QDialog.DialogCode.Accepted else None
 
 
 class BatchReviewDialog(QDialog):
@@ -755,7 +826,7 @@ class BatchReviewDialog(QDialog):
         item = self.plan.items[row]
         prepared = item.prepared.decode('utf-8-sig')
         self.script.setPlainText(prepared)
-        inspection = privacy.inspect_script(prepared)
+        inspection = privacy.safety_inspect(prepared)
         self.meta.setPlainText('\n'.join((
             self.plan.batch_id, item.task_id, item.title,
             'SHA-256: ' + sha(item.prepared),
@@ -772,6 +843,8 @@ class BatchReviewDialog(QDialog):
             if fault: self.meta.appendPlainText('\n' + fault)
             prior = self.snapshot['review_faults'].get(item.task_id)
             if prior: self.meta.appendPlainText('\n' + self.ui('batch_repeat_blocked') + '\n' + json.dumps(prior, ensure_ascii=False))
+            risk = self.snapshot.get('safety_faults', {}).get(item.task_id)
+            if risk: self.meta.appendPlainText('\n' + self.ui('safety_gate_paused') + '\n' + safety_labels(self.ui, risk))
 
     def update_bindings(self):
         if self.session is not None: return
@@ -818,9 +891,12 @@ class BatchReviewDialog(QDialog):
         if workers > 1: warning += '\n\n' + self.ui('batch_parallel_warning')
         if QMessageBox.question(self, self.ui('batch_start'), warning, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
+        approved = confirm_safety(self, self.reviewed)
+        if approved is None:
+            self.status.setText(self.ui('safety_gate_paused')); return
         try:
             REPORTS.mkdir(exist_ok=True)
-            run = BatchExecutionSession(self.plan, dict(self.workspaces), self.reviewed, REPORTS, workers=workers)
+            run = BatchExecutionSession(self.plan, dict(self.workspaces), self.reviewed, REPORTS, workers=workers, safety_approved=approved)
         except (OSError, ValueError) as error:
             self.status.setText(self.ui('batch_error') + ': ' + str(error)); return
         self.session = run
@@ -850,7 +926,7 @@ class BatchReviewDialog(QDialog):
             for row, item in enumerate(self.plan.items):
                 self.table.item(row, 3).setText(self.ui('batch_' + snap['states'][item.task_id]))
             done = sum(state in ('succeeded','failed','unverified','cancelled','blocked') for state in snap['states'].values())
-            self.status.setText(self.ui('batch_progress').format(done=done, total=len(self.plan.items)) + (' · ' + self.ui('batch_halted') if snap['halted'] and not snap['finished'] else ''))
+            self.status.setText(self.ui('batch_progress').format(done=done, total=len(self.plan.items)) + (' · ' + self.ui('batch_halted') if snap['halted'] and not snap['finished'] else '') + (' · ' + self.ui('safety_gate_paused') if snap.get('safety_faults') else ''))
             self.selection_changed()
         if self.snapshot is not None and self.snapshot['finished'] and not self.worker.is_alive():
             self.poll_timer.stop(); self.stop_button.setEnabled(False); self.cancel_button.setEnabled(False)
@@ -875,47 +951,412 @@ class BatchReviewDialog(QDialog):
         super().closeEvent(event)
 
 
+class LocalPlanDialog(QDialog):
+    """No execution until explicit approval by the caller; cooperative stop."""
+    def __init__(self, parent, reviewed):
+        super().__init__(parent);self.ui=parent.ui;self.reviewed=reviewed
+        self.cancel=threading.Event();self.results=queue.Queue();self.worker=None
+        self.outcome=None;self.setWindowTitle(self.ui('plan_title'));self.resize(560,180)
+        layout=QVBoxLayout(self);self.status=QLabel(self.ui('plan_running'));self.status.setWordWrap(True);layout.addWidget(self.status)
+        self.stop_button=QPushButton(self.ui('plan_stop'));self.stop_button.clicked.connect(self.stop);layout.addWidget(self.stop_button)
+        self.timer=QTimer(self);self.timer.setInterval(75);self.timer.timeout.connect(self.poll)
+
+    def begin(self):
+        if self.worker is not None: return
+        error=self.ui('plan_invalid')
+        def work():
+            try:self.results.put((self.reviewed.run(self.cancel), None))
+            except Exception:self.results.put((None, error))
+        self.worker=threading.Thread(target=work,daemon=True);self.worker.start();self.timer.start()
+
+    def stop(self):
+        self.cancel.set();self.status.setText(self.ui('plan_stopping'));self.stop_button.setEnabled(False)
+
+    def poll(self):
+        if self.worker is None or self.worker.is_alive(): return
+        self.timer.stop()
+        try:self.outcome,self.error=self.results.get_nowait()
+        except queue.Empty:self.outcome,self.error=None,self.ui('plan_invalid')
+        self.accept()
+
+    def done(self, code):
+        if self.worker is not None and self.worker.is_alive(): self.stop();return
+        super().done(code)
+
+    def reject(self):
+        if self.worker is not None and self.worker.is_alive(): self.stop();return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.worker is not None and self.worker.is_alive(): self.stop();event.ignore();return
+        super().closeEvent(event)
+
+
+class UserSkillsDialog(QDialog):
+    """Personal, explicitly selected data. No executable plugin loading."""
+    def __init__(self, parent, store=None):
+        super().__init__(parent);self.ui=parent.ui
+        self.store=store if store is not None else features.UserSkillStore()
+        self.skills=();self.chosen=None
+        self.setWindowTitle(self.ui('skills_title'));self.resize(790,540)
+        layout=QVBoxLayout(self)
+        notice=QLabel(self.ui('skills_notice'));notice.setWordWrap(True);layout.addWidget(notice)
+        row=QHBoxLayout()
+        for label,fn in [('skills_import',self.import_file),('skills_paste',self.import_clipboard),('skills_refresh',self.refresh),('skills_folder',self.open_folder)]:
+            button=QPushButton(self.ui(label));button.clicked.connect(fn);row.addWidget(button)
+        row.addStretch();layout.addLayout(row)
+        split=QSplitter(Qt.Orientation.Horizontal);self.list=QListWidget();self.list.setAccessibleName(self.ui('skills_title'));split.addWidget(self.list)
+        self.preview=QPlainTextEdit();self.preview.setReadOnly(True);self.preview.setAccessibleName(self.ui('skills_instruction_heading'));split.addWidget(self.preview);split.setSizes([230,530]);layout.addWidget(split,1)
+        self.status=QLabel();self.status.setTextFormat(Qt.TextFormat.PlainText);self.status.setWordWrap(True);layout.addWidget(self.status)
+        row=QHBoxLayout();self.copy_button=QPushButton(self.ui('skills_copy'));self.copy_button.clicked.connect(self.copy_instructions);row.addWidget(self.copy_button);self.load_button=QPushButton(self.ui('skills_load'));self.load_button.clicked.connect(self.review_template);row.addWidget(self.load_button);row.addStretch();close=QPushButton(self.ui('skills_close'));close.clicked.connect(self.reject);row.addWidget(close);layout.addLayout(row)
+        self.list.currentRowChanged.connect(self.show_selection);self.refresh()
+
+    def refresh(self):
+        self.list.clear();self.skills=();self.errors=()
+        try:self.skills,self.errors=self.store.scan()
+        except (OSError,ValueError) as exc:self.status.setText(str(exc));self.show_selection(-1);return
+        for skill in self.skills:self.list.addItem(f'{skill.title} · v{skill.revision} ({skill.skill_id})')
+        if self.errors:self.status.setText(self.ui('skills_errors').format(count=len(self.errors)))
+        else:self.status.setText('' if self.skills else self.ui('skills_empty'))
+        self.show_selection(-1)
+
+    def show_selection(self,index):
+        skill=self.skills[index] if 0<=index<len(self.skills) else None
+        self.copy_button.setEnabled(skill is not None);self.load_button.setEnabled(skill is not None and skill.task_bytes is not None)
+        if skill is None:
+            self.preview.setPlainText('\n'.join(f'{name}: {error}' for name,error in self.errors));return
+        task=skill.task_bytes.decode('utf-8') if skill.task_bytes else self.ui('skills_no_template')
+        self.preview.setPlainText(f'{skill.title}\n{skill.description}\nSHA-256: {skill.digest}\n\n{self.ui("skills_instruction_heading")}\n{skill.instructions}\n\n{self.ui("skills_task_heading")}\n{task}')
+
+    def reviewed(self):
+        index=self.list.currentRow()
+        if not 0<=index<len(self.skills):return None
+        skill=self.skills[index]
+        try:current=self.store.read(skill.filename)
+        except (OSError,ValueError) as exc:self.status.setText(str(exc));return None
+        if current.digest!=skill.digest:self.status.setText(self.ui('skills_changed'));return None
+        return current
+
+    def import_file(self):
+        path,_=QFileDialog.getOpenFileName(self,self.ui('skills_import'),'','JSON (*.json)')
+        if path:
+            try:self.import_bytes(features.read_bounded(path,features.SKILL_LIMIT))
+            except (OSError,ValueError) as exc:self.status.setText(str(exc))
+
+    def import_clipboard(self):
+        try:self.import_bytes(QApplication.clipboard().text().encode('utf-8'))
+        except (UnicodeError,ValueError) as exc:self.status.setText(str(exc))
+
+    def import_bytes(self,data):
+        try:skill=features.load_skill(data)
+        except (OSError,ValueError) as exc:self.status.setText(str(exc));return
+        # Plain text prevents manifest strings from becoming HTML in the prompt.
+        box=QMessageBox(self);box.setWindowTitle(self.ui('skills_title'));box.setTextFormat(Qt.TextFormat.PlainText)
+        box.setText(self.ui('skills_import_confirm')+'\n\n'+skill.title+' · v'+str(skill.revision)+'\n'+skill.description)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No);box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec()!=QMessageBox.StandardButton.Yes:return
+        try:self.store.install(data)
+        except (OSError,ValueError) as exc:self.status.setText(str(exc));return
+        self.refresh()
+        for i,item in enumerate(self.skills):
+            if item.digest==skill.digest:self.list.setCurrentRow(i);break
+
+    def copy_instructions(self):
+        skill=self.reviewed()
+        if skill is None:return
+        QApplication.clipboard().setText(skill.instructions);self.status.setText(self.ui('skills_copied'))
+
+    def review_template(self):
+        skill=self.reviewed()
+        if skill is None or skill.task_bytes is None:return
+        if QMessageBox.question(self,self.ui('skills_title'),self.ui('skills_load_confirm'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        self.chosen=skill;self.accept()
+
+    def open_folder(self):
+        try:QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.store.ensure())))
+        except (OSError,ValueError) as exc:self.status.setText(str(exc))
+
+
+class BrowserBridge(QDockWidget):
+    """Optional off-record browser; explicit reviewed transfers only."""
+    draftDone=Signal(object,object)
+    def __init__(self, owner):
+        # Do not import or instantiate WebEngine during regular startup.
+        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings, QWebEngineDownloadRequest
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        super().__init__(owner.ui('bridge_title'), owner)
+        self.owner=owner;self.setObjectName('browser_bridge');self.pending=None;self.transfer=None;self.closing=False
+        self.draft_request=None;self.draft_epoch=0;self.draftDone.connect(self.draft_ready)
+        self.setAllowedAreas(Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.setMinimumWidth(300)
+        self.state_enum=QWebEngineDownloadRequest.DownloadState
+        class Page(QWebEnginePage):
+            def acceptNavigationRequest(self,url,kind,is_main_frame):
+                # No external scheme handlers or local file navigation. Normal
+                # authentication redirects over HTTPS remain possible.
+                if url.toString() == 'about:blank':return True
+                try:features.browser_origin(url.toString());return True
+                except ValueError:return False
+            def chooseFiles(self,mode,old,types):return []
+            def createWindow(self,kind):return None
+        body=QWidget(self);layout=QVBoxLayout(body);layout.setContentsMargins(6,6,6,6)
+        self.address=QLineEdit();self.address.setPlaceholderText('https://…');self.address.setAccessibleName(owner.ui('bridge_address'))
+        self.address.returnPressed.connect(self.navigate);layout.addWidget(self.address)
+        row=QHBoxLayout();owner.btn(row,owner.ui('bridge_go'),self.navigate);owner.btn(row,owner.ui('bridge_external'),self.open_external);layout.addLayout(row)
+        # The profile outlives the page; it does not persist login data on disk.
+        self.profile=QWebEngineProfile(QApplication.instance());self.profile.downloadRequested.connect(self.download)
+        self.web=QWebEngineView(body);self.page=Page(self.profile,self.web);self.web.setPage(self.page)
+        settings=self.page.settings();attr=QWebEngineSettings.WebAttribute
+        for key in ('JavascriptCanOpenWindows','JavascriptCanAccessClipboard','JavascriptCanPaste','LocalContentCanAccessFileUrls','LocalContentCanAccessRemoteUrls','PluginsEnabled','FullScreenSupportEnabled','ScreenCaptureEnabled','AllowRunningInsecureContent'):
+            settings.setAttribute(getattr(attr,key),False)
+        settings.setUnknownUrlSchemePolicy(QWebEngineSettings.UnknownUrlSchemePolicy.DisallowUnknownUrlSchemes)
+        self.page.permissionRequested.connect(lambda permission:permission.deny())
+        self.page.certificateError.connect(lambda error:error.rejectCertificate())
+        self.page.urlChanged.connect(self.location_changed)
+        self.page.renderProcessTerminated.connect(self.renderer_failed)
+        layout.addWidget(self.web,1)
+        self.status=QLabel(owner.ui('bridge_notice'));self.status.setTextFormat(Qt.TextFormat.PlainText);self.status.setWordWrap(True);layout.addWidget(self.status)
+        self.review_button=QPushButton(owner.ui('bridge_review'));self.review_button.setEnabled(False);self.review_button.clicked.connect(self.review);row=QHBoxLayout();row.addWidget(self.review_button,1);self.discard_button=QPushButton(owner.ui('bridge_discard'));self.discard_button.clicked.connect(self.discard);row.addWidget(self.discard_button);layout.addLayout(row)
+        self.copy_button=QPushButton(owner.ui('bridge_copy'));self.copy_button.clicked.connect(self.copy_result);layout.addWidget(self.copy_button)
+        self.draft_button=QPushButton(owner.ui('bridge_draft'));self.draft_button.clicked.connect(self.prepare_draft);layout.addWidget(self.draft_button)
+        self.web.loadStarted.connect(self.navigation_started)
+        self.setWidget(body)
+        self.web.loadFinished.connect(self.loaded)
+    def msg(self,key):self.status.setText(self.owner.ui(key))
+    def navigate(self):
+        address=self.address.text().strip()
+        try:features.browser_origin(address)
+        except ValueError:self.msg('bridge_invalid_url');return
+        self.web.setUrl(QUrl(address))
+    def open_external(self):
+        address=self.address.text().strip()
+        try:features.browser_origin(address)
+        except ValueError:self.msg('bridge_invalid_url');return
+        QDesktopServices.openUrl(QUrl(address))
+    def loaded(self,ok):
+        if self.closing:return
+        if not ok:self.msg('bridge_load_failed')
+    def renderer_failed(self,*args):
+        if self.closing:return
+        self.invalidate_draft();self.discard();self.msg('bridge_load_failed')
+    def navigation_started(self):
+        if self.closing:return
+        # Reloads of the same URL also invalidate reviewed/pending transfers.
+        self.invalidate_draft();self.pending=None;self.review_button.setEnabled(False)
+        if self.transfer is not None:self.transfer[0].cancel()
+    def location_changed(self,url):
+        if self.closing:return
+        self.navigation_started();self.address.setText(url.toString())
+    def download(self,request):
+        if self.closing:request.cancel();return
+        page_url=self.page.url().toString();name=request.downloadFileName()
+        if self.transfer is not None or self.pending is not None or request.page()!=self.page or not features.browser_download_allowed(page_url,request.url().toString(),name,request.totalBytes()):
+            request.cancel();self.msg('bridge_download_denied');return
+        try:folder=tempfile.TemporaryDirectory(prefix='relay-browser-')
+        except OSError:request.cancel();self.msg('bridge_download_failed');return
+        self.transfer=(request,folder,page_url,name,self.draft_epoch)
+        request.setDownloadDirectory(folder.name);request.setDownloadFileName('incoming.json')
+        request.receivedBytesChanged.connect(self.download_progress);request.totalBytesChanged.connect(self.download_progress)
+        request.isFinishedChanged.connect(self.download_finished)
+        self.msg('bridge_downloading');request.accept()
+    def download_progress(self):
+        if self.closing or self.transfer is None:return
+        request=self.transfer[0]
+        if request.receivedBytes()>PACKET_LIMIT or request.totalBytes()>PACKET_LIMIT:request.cancel()
+    def download_finished(self):
+        if self.closing or self.transfer is None:return
+        request,folder,source,name,epoch=self.transfer
+        if not request.isFinished():return
+        self.transfer=None
+        try:
+            if request.state()!=self.state_enum.DownloadCompleted or self.page.url().toString()!=source or epoch!=self.draft_epoch:raise ValueError('Interrupted or stale transfer')
+            data=features.read_bounded(pathlib.Path(folder.name)/'incoming.json',PACKET_LIMIT)
+            features.browser_task_packet(data);self.pending=(data,name,source);self.review_button.setEnabled(True);self.msg('bridge_ready')
+        except (OSError,ValueError,UnicodeError):self.msg('bridge_download_failed')
+        finally:
+            try:folder.cleanup()
+            except OSError:self.msg('bridge_cleanup_failed')
+    def discard(self):
+        self.pending=None;self.review_button.setEnabled(False)
+        if self.transfer is not None:self.transfer[0].cancel()
+        self.msg('bridge_notice')
+    def review(self):
+        if self.pending is None:return
+        data,name,source=self.pending;owner=self.owner
+        if owner.running or owner.batch_active or owner.stop_inflight or owner.tool_busy or owner.copy_busy:self.msg('batch_busy');return
+        if source!=self.page.url().toString():self.pending=None;self.review_button.setEnabled(False);self.msg('bridge_download_failed');return
+        workspace=owner.cwd.text();draft=owner.editor.toPlainText();epoch=self.draft_epoch
+        if QMessageBox.question(self,owner.ui('bridge_review'),owner.ui('bridge_review_notice'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        if self.closing or epoch!=self.draft_epoch or self.pending!=(data,name,source) or self.page.url().toString()!=source or owner.cwd.text()!=workspace or owner.editor.toPlainText()!=draft or owner.running or owner.batch_active or owner.stop_inflight or owner.tool_busy or owner.copy_busy:
+            self.msg('bridge_stale_result');return
+        try:
+            owner.route_input(data,name,sha(data));self.pending=None;self.review_button.setEnabled(False);self.msg('bridge_reviewed')
+        except (ValueError,UnicodeError) as exc:owner.error(exc)
+    def copy_result(self):
+        # No DOM injection, automatic paste or send. The user selects the chat
+        # input and reviews the protected export before pasting/sending.
+        owner=self.owner
+        def busy():return owner.copy_busy or owner.running or owner.batch_active or owner.stop_inflight or owner.tool_busy
+        if self.closing or busy() or not owner.current:self.msg('bridge_no_result');return
+        path=pathlib.Path(owner.current);url=self.page.url().toString();workspace=owner.cwd.text();epoch=self.draft_epoch
+        try:
+            origin=features.browser_origin(url);stamp=exports.stamp(path)
+            if not path.is_file() or path.is_symlink():raise ValueError('Invalid report')
+            with path.open('rb') as stream:fields=session.header_fields(stream.read(session.MAX_HEADER).decode('utf-8','replace'))
+            actual=fields.get('Working directory')
+            if not actual or exports.stamp(path)!=stamp:raise ValueError('Invalid report')
+        except (OSError,ValueError):self.msg('bridge_no_result');return
+        # No query strings, credentials or untrusted HTML in the prompt.
+        host=origin[1] if ':' not in origin[1] else '['+origin[1]+']'
+        host=f'{origin[0]}://{host}:{origin[2]}'
+        notice=owner.ui('bridge_copy_notice')+'\n\n'+owner.ui('bridge_copy_identity').format(report=view.history_text(path.name,120),host=host,workspace=view.history_text(actual,300))
+        box=QMessageBox(self);box.setTextFormat(Qt.TextFormat.PlainText);box.setWindowTitle(owner.ui('bridge_copy'));box.setText(notice);box.setStandardButtons(QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No);box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec()!=QMessageBox.StandardButton.Yes:return
+        try:
+            if self.closing or epoch!=self.draft_epoch or busy() or owner.current!=path or owner.cwd.text()!=workspace or self.page.url().toString()!=url or exports.stamp(path)!=stamp:raise ValueError('Stale review')
+        except (OSError,ValueError):self.msg('bridge_stale_result');return
+        owner.copy_report('ai',path);self.msg('bridge_copy_pending')
+    def invalidate_draft(self):
+        self.draft_epoch+=1;self.draft_request=None
+        if not self.closing:self.draft_button.setEnabled(True)
+    def draft_url(self):
+        return self.page.url().toString(QUrl.ComponentFormattingOption.FullyEncoded)
+    def draft_busy(self):
+        owner=self.owner
+        return owner.copy_busy or owner.running or owner.batch_active or owner.stop_inflight or owner.tool_busy
+    def draft_valid(self,request):
+        if self.closing or self.draft_request!=request or self.draft_busy():return False
+        epoch,url,workspace,path,stamp,nonce=request
+        try:return (epoch==self.draft_epoch and url==self.draft_url() and self.owner.cwd.text()==workspace
+                    and self.owner.current==path and not path.is_symlink() and exports.stamp(path)==stamp)
+        except (OSError,ValueError):return False
+    def finish_draft(self,request,key):
+        if not self.closing and self.draft_request==request:
+            self.draft_request=None;self.draft_button.setEnabled(True);self.msg(key)
+    def prepare_draft(self):
+        import secrets
+        if self.closing or self.draft_request is not None or self.draft_busy() or not self.owner.current:
+            self.msg('bridge_no_result');return
+        path=pathlib.Path(self.owner.current);url=self.draft_url()
+        try:
+            features.browser_origin(url);stamp=exports.stamp(path)
+            if path.is_symlink() or not path.is_file() or stamp[2]>exports.WARM_MAX_BYTES:raise ValueError('Report not eligible')
+        except (OSError,ValueError):self.msg('bridge_draft_fallback');return
+        request=(self.draft_epoch,url,self.owner.cwd.text(),path,stamp,secrets.token_hex(16))
+        self.draft_request=request;self.draft_button.setEnabled(False);self.msg('bridge_draft_preparing')
+        def captured(ok):
+            if not self.draft_valid(request) or ok is not True:
+                self.finish_draft(request,'bridge_draft_fallback');return
+            def work():
+                try:prepared=exports.build_ai(path,warm=True)
+                except Exception:prepared=None
+                try:self.draftDone.emit(request,prepared)
+                except RuntimeError:pass
+            threading.Thread(target=work,daemon=True).start()
+        self.page.runJavaScript(features.browser_draft_script(url,request[-1]),1,captured)
+    def draft_ready(self,request,prepared):
+        if not self.draft_valid(request) or prepared is None or prepared.report_stamp!=request[4] or not prepared.fresh() or not 0<len(prepared.text)<=features.BROWSER_DRAFT_LIMIT:
+            self.finish_draft(request,'bridge_draft_fallback');return
+        url=request[1];origin=features.browser_origin(url)
+        dialog=QDialog(self);dialog.setWindowTitle(self.owner.ui('bridge_draft'));dialog.resize(780,530)
+        layout=QVBoxLayout(dialog);notice=QLabel(self.owner.ui('bridge_draft_notice').format(host=origin[1],report=view.history_text(request[3].name,120)));notice.setTextFormat(Qt.TextFormat.PlainText);notice.setWordWrap(True);layout.addWidget(notice)
+        editor=QPlainTextEdit(prepared.text);editor.setReadOnly(True);layout.addWidget(editor,1)
+        row=QHBoxLayout();cancel=QPushButton(self.owner.ui('bridge_draft_cancel'));cancel.clicked.connect(dialog.reject);cancel.setDefault(True);row.addWidget(cancel);insert=QPushButton(self.owner.ui('bridge_draft_insert'));insert.setAutoDefault(False);insert.clicked.connect(dialog.accept);row.addWidget(insert);layout.addLayout(row)
+        cancel.setFocus()
+        try:
+            decision=dialog.exec()
+        except (RuntimeError, TypeError):
+            self.finish_draft(request,'bridge_draft_fallback');return
+        finally:
+            dialog.deleteLater()
+        if decision!=QDialog.DialogCode.Accepted:
+            self.finish_draft(request,'bridge_draft_cancelled');return
+        if not self.draft_valid(request) or not prepared.fresh():
+            self.finish_draft(request,'bridge_stale_result');return
+        def inserted(ok):
+            self.finish_draft(request,'bridge_draft_inserted' if ok is True else 'bridge_draft_unknown')
+        self.page.runJavaScript(features.browser_draft_script(url,request[-1],prepared.text),1,inserted)
+    def shutdown(self):
+        """Destroy all pages before the profile, while QApplication is alive."""
+        if self.closing:return
+        from shiboken6 import delete, isValid
+        self.closing=True;self.invalidate_draft();self.pending=None;self.review_button.setEnabled(False)
+        transfer=self.transfer;self.transfer=None
+        self.profile.downloadRequested.disconnect(self.download)
+        if transfer is not None:
+            request,folder,_,_,_=transfer
+            if isValid(request):request.cancel()
+        self.web.stop();self.web.hide()
+        web,page,profile=self.web,self.page,self.profile
+        self.web=self.page=self.profile=None
+        # Explicit native destruction, not just Python reference drops or a
+        # deferred deletion after the event loop has already stopped.
+        delete(web)
+        if isValid(page):delete(page)
+        delete(profile)
+        if transfer is not None:
+            try:folder.cleanup()
+            except OSError:self.msg('bridge_cleanup_failed')
+
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__();self.resize(1180,740);self.setMinimumSize(850,560)
         self.update_handoff = None
         self.batch_active = False
-        self.settings=read_settings();self.running=False;self.cancelled=False;self.proc=None;self.temp=None;self.journal=None;self.active=None;self.current=None;self.source='Untitled';self.source_hash=None;self.loaded=None;self.task={};self.pending=[];self.blank=False;self.started=0;self.stop_pending=False;self.stop_inflight=False
+        self.browser_bridge = None
+        self.settings=workspace_settings(read_settings());self.running=False;self.cancelled=False;self.proc=None;self.temp=None;self.journal=None;self.active=None;self.current=None;self.source='Untitled';self.source_hash=None;self.loaded=None;self.task={};self.pending=[];self.blank=False;self.started=0;self.stop_pending=False;self.stop_inflight=False
         self.signals=WorkerSignals();self.signals.hashDone.connect(self.hash_done);self.signals.stopDone.connect(self.stop_done);self.signals.initialTail.connect(self.finish_initial_tail);self.initial_restore_pending=True;self.tool_busy=False;self.task_queue=[];self.signals.toolDone.connect(self.tool_done);self.copy_busy=False;self.signals.copyDone.connect(self.copy_done);self.warm_path=None;self.warm_result=None;self.warm_waiting=False;self.signals.warmDone.connect(self.warm_done)
         self.ui_language=saved_language(self.settings) or 'en'
+        self.setLayoutDirection(Qt.LayoutDirection.RightToLeft if locale_direction(self.ui_language)=='rtl' else Qt.LayoutDirection.LeftToRight)
         self.setWindowTitle(self.ui('window_title').format(version=VERSION))
-        self.mode=saved_mode(self.settings) or DEFAULT_MODE
         apply_theme(view.saved_theme(self.settings))
         self.edit_controls=[];self.lib=pathlib.Path(self.settings.get('library') or ROOT/'scripts');
         central=QWidget();self.setCentralWidget(central);v=QVBoxLayout(central);v.setContentsMargins(*WINDOW_MARGINS);v.setSpacing(LAYOUT_GAP)
-        leading,row=action_group();h=QLabel('COMMAND RELAY');h.setProperty('role','brand');row.addWidget(h);self.mode_label=QLabel();self.mode_label.setProperty('role','muted');row.addWidget(self.mode_label)
-        trailing,row=action_group();self.more=QPushButton(self.ui('more'));row.addWidget(self.more);self.more.setToolTip(self.ui('more_tip'))
-        self.header_row=AdaptiveActionRow(leading,trailing);v.addLayout(self.header_row)
-        row=QHBoxLayout();row.addWidget(QLabel(self.ui('workspace')));self.cwd=QLineEdit(self.settings.get('workspace') or os.getcwd());row.addWidget(self.cwd,1);self.edit_controls.append(self.cwd);self.btn(row,self.ui('browse'),self.browse,True);self.btn(row,self.ui('profiles'),self.profiles,True);v.addLayout(row)
-        leading,row=action_group();self.openbtn=self.btn(row,self.ui('open_file'),self.open,True);self.pastebtn=self.btn(row,self.ui('paste_ai'),self.paste,True)
-        trailing,row=action_group();self.stopbtn=self.btn(row,self.ui('stop'),self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,self.ui('run_commands'),self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip(self.ui('run_tip'))
+        # Identity is independent of navigation and task actions.
+        brand=QHBoxLayout();brand.setSpacing(10);h=QLabel('Command Relay');h.setProperty('role','brand');brand.addWidget(h)
+        version_label=QLabel('v'+VERSION);version_label.setProperty('role','muted');brand.addWidget(version_label);brand.addStretch(1);align_workbench_row(brand);v.addLayout(brand)
+        self.navigation=QFrame();self.navigation.setObjectName('navigationSurface');self.navigation.setSizePolicy(QSizePolicy.Policy.Expanding,QSizePolicy.Policy.Fixed);nav_layout=QVBoxLayout(self.navigation);nav_layout.setContentsMargins(8,8,8,8);nav_layout.setSpacing(0)
+        v.addWidget(self.navigation)
+        leading,row=action_group();leading.setObjectName('navigationGroup');self.nav_leading=row
+        self.session_nav=self.btn(row,self.ui('shell_session'),self.focus_session);self.session_nav.setProperty('role','navCurrent')
+        # Keep the two adaptive groups independently small: never put all six
+        # navigation controls into a single indivisible horizontal group.
+        self.queue_nav=QPushButton(self.ui('nav_queue'));row.addWidget(self.queue_nav);self.history_nav=self.btn(row,self.ui('history'),self.history);self.skills_button=self.btn(row,self.ui('skills_title'),self.skills_dialog,True);self.skills_button.setObjectName('user_skills')
+        trailing,row=action_group();trailing.setObjectName('navigationGroup');self.nav_trailing=row;self.about_button=self.btn(row,self.ui('about_button'),self.about_dialog);self.about_button.setObjectName('about');self.more=QPushButton(self.ui('nav_tools'));row.addWidget(self.more);self.more.setToolTip(self.ui('nav_tools_tip'));self.settings_nav=QPushButton(self.ui('settings'));row.addWidget(self.settings_nav)
+        self.header_row=AdaptiveActionRow(leading,trailing);nav_layout.addLayout(self.header_row)
+        for button in (self.queue_nav,self.history_nav,self.skills_button,self.about_button,self.more,self.settings_nav):button.setProperty('role','nav')
+        for group in (self.nav_leading,self.nav_trailing):align_workbench_row(group)
+        self.work_surface=QWidget();v.addWidget(self.work_surface,1);v=QVBoxLayout(self.work_surface);v.setContentsMargins(0,0,0,0);v.setSpacing(LAYOUT_GAP)
+        row=QHBoxLayout();row.setSpacing(CONTROL_GAP);self.workspace_label=QLabel(self.ui('workspace'));row.addWidget(self.workspace_label);self.cwd=QLineEdit(self.settings.get('workspace') or os.getcwd());row.addWidget(self.cwd,1);self.edit_controls.append(self.cwd);self.browse_button=self.btn(row,self.ui('browse'),self.browse,True);self.profiles_button=self.btn(row,self.ui('profiles'),self.profiles,True);align_workbench_row(row);v.addLayout(row)
+        leading,row=action_group();self.openbtn=self.btn(row,self.ui('open_file'),self.open,True);self.pastebtn=self.btn(row,self.ui('paste_ai'),self.paste,True);self.chat_button=self.btn(row,self.ui('bridge_title'),self.open_browser_bridge);self.chat_button.setProperty('role','secondary');align_workbench_row(row)
+        trailing,row=action_group();self.stopbtn=self.btn(row,self.ui('stop'),self.stop);self.stopbtn.setEnabled(False);self.runbtn=self.btn(row,self.ui('run_commands'),self.run);self.runbtn.setObjectName('run');self.runbtn.setToolTip(self.ui('run_tip'));align_workbench_row(row)
         self.command_row=AdaptiveActionRow(leading,trailing);v.addLayout(self.command_row)
-        self.casual_report_ready=False;self.casual_run_title=None;self.casual_style_state=None
-        self.casual_hint=QWidget();self.casual_hint.setObjectName('casualCard');v.addWidget(self.casual_hint)
-        card=QVBoxLayout(self.casual_hint);card.setContentsMargins(10,7,10,7);card.setSpacing(4)
-        flow=QHBoxLayout();flow.setSpacing(4);self.casual_steps={}
-        for stage in ('import','review','run','result'):
-            label=QLabel(self.ui('casual_'+stage));label.setAlignment(Qt.AlignmentFlag.AlignCenter);label.setWordWrap(True)
-            self.casual_steps[stage]=label;flow.addWidget(label,1)
-        card.addLayout(flow)
-        self.casual_title=QLabel();self.casual_title.setTextFormat(Qt.TextFormat.PlainText);self.casual_title.setProperty('role','casualTitle');self.casual_title.setWordWrap(True);self.casual_title.setAccessibleName(self.ui('casual_title_accessible'));card.addWidget(self.casual_title)
-        self.casual_help=QLabel();self.casual_help.setProperty('role','casualHelp');self.casual_help.setWordWrap(True);card.addWidget(self.casual_help)
-        split=QSplitter(Qt.Orientation.Horizontal);self.main_split=split;split.setChildrenCollapsible(False);split.setOpaqueResize(True);split.setHandleWidth(SPLITTER_WIDTH);v.addWidget(split,1)
-        self.tabs=QTabWidget();self.tabs.setMinimumWidth(175);split.addWidget(self.tabs)
-        w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(5,5,5,5);l.addWidget(QLabel(self.ui('live_output')));self.steps=QListWidget();l.addWidget(self.steps,3);l.addWidget(QLabel(self.ui('outline')));self.outline=QListWidget();l.addWidget(self.outline,2);self.tabs.addTab(w,self.ui('steps'));self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item));self.steps.itemActivated.connect(lambda item:self.jump(self.output,item));self.outline.itemActivated.connect(lambda item:self.jump(self.editor,item))
-        w=QWidget();l=QVBoxLayout(w);l.addWidget(QLabel(self.ui('library_heading')));self.liblabel=QLabel(str(self.lib));self.liblabel.setWordWrap(True);l.addWidget(self.liblabel);r=QHBoxLayout();self.btn(r,self.ui('folder_ellipsis'),self.choose_lib,True);self.btn(r,self.ui('refresh'),self.refresh_lib);l.addLayout(r);self.libfind=QLineEdit();self.libfind.setPlaceholderText(self.ui('filter_scripts'));l.addWidget(self.libfind);self.library=QListWidget();l.addWidget(self.library,1);self.btn(l,self.ui('load_selected'),self.load_lib,True);self.btn(l,self.ui('save_editor'),self.save_script,True);self.tabs.addTab(w,self.ui('scripts'));self.libfind.textChanged.connect(self.refresh_lib);self.library.itemDoubleClicked.connect(lambda _:self.load_lib())
-        right=QSplitter(Qt.Orientation.Vertical);right.setChildrenCollapsible(False);right.setOpaqueResize(True);right.setHandleWidth(SPLITTER_WIDTH);split.addWidget(right);split.setSizes([250,900]);split.setStretchFactor(1,1)
-        w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(4,0,0,0);self.command_label=QLabel(self.ui('commands_initial'));self.command_label.setProperty('role','section');r=QHBoxLayout();r.addWidget(self.command_label,1);self.inspector_label=QLabel();self.inspector_label.hide();r.addWidget(self.inspector_label);l.addLayout(r);self.editor=DropEditor();self.editor.setMinimumHeight(100);self.editor.setPlaceholderText(self.ui('editor_placeholder'));self.editor.setProperty('role','code');self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap);l.addWidget(self.editor,1);self.editor.fileDropped.connect(self.load);self.outline_dirty=True;self.outline_timer=QTimer(self);self.outline_timer.setSingleShot(True);self.outline_timer.setInterval(OUTLINE_DELAY_MS);self.outline_timer.timeout.connect(self.refresh_outline);self.editor.textChanged.connect(self.invalidate_outline);self.inspector_timer=QTimer(self);self.inspector_timer.setSingleShot(True);self.inspector_timer.setInterval(220);self.inspector_timer.timeout.connect(self.update_inspector);self.editor.textChanged.connect(lambda:self.inspector_timer.start());self.editor_highlight=Highlight(self.editor.document());right.addWidget(w)
-        w=QWidget();l=QVBoxLayout(w);l.setContentsMargins(4,0,0,0);r=QHBoxLayout();self.output_label=QLabel(self.ui('terminal_initial'));self.output_label.setProperty('role','section');r.addWidget(self.output_label);r.addStretch();self.dense=QCheckBox(self.ui('dense'),w);self.dense.setChecked(self.settings.get('dense_output',True));self.wrap=QCheckBox(self.ui('wrap'),w);self.wrap.setChecked(self.settings.get('wrap_output',True));self.follow=QCheckBox(self.ui('follow'));self.follow.setChecked(True)
+        # The default workspace has no permanent utility column. A bottom dock is opt-in.
+        self.auxiliary=QDockWidget(self.ui('sidebar'),self);self.auxiliary.setObjectName('workspaceUtilities')
+        self.auxiliary.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea)
+        self.auxiliary.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
+        self.tabs=QTabWidget();self.auxiliary.setWidget(self.tabs)
+        w=QWidget();l=QHBoxLayout(w);l.setContentsMargins(8,8,8,8);l.setSpacing(CONTROL_GAP);left=QVBoxLayout();left.setSpacing(CONTROL_GAP);left.addWidget(QLabel(self.ui('live_output')));self.steps=QListWidget();left.addWidget(self.steps,1);l.addLayout(left,1);outline_box=QVBoxLayout();outline_box.setSpacing(CONTROL_GAP);outline_box.addWidget(QLabel(self.ui('outline')));self.outline=QListWidget();outline_box.addWidget(self.outline,1);l.addLayout(outline_box,1);self.tabs.addTab(w,self.ui('steps'));self.steps.itemClicked.connect(lambda item:self.jump(self.output,item));self.outline.itemClicked.connect(lambda item:self.jump(self.editor,item));self.steps.itemActivated.connect(lambda item:self.jump(self.output,item));self.outline.itemActivated.connect(lambda item:self.jump(self.editor,item))
+        w=QWidget();l=QVBoxLayout(w);l.addWidget(QLabel(self.ui('library_heading')));self.liblabel=QLabel(str(self.lib));self.liblabel.setTextFormat(Qt.TextFormat.PlainText);self.liblabel.setWordWrap(True);l.addWidget(self.liblabel);r=QHBoxLayout();self.btn(r,self.ui('folder_ellipsis'),self.choose_lib,True);self.btn(r,self.ui('refresh'),self.refresh_lib);l.addLayout(r);self.libfind=QLineEdit();self.libfind.setPlaceholderText(self.ui('filter_scripts'));l.addWidget(self.libfind);self.library=QListWidget();l.addWidget(self.library,1);r=QHBoxLayout();r.setSpacing(CONTROL_GAP);self.btn(r,self.ui('load_selected'),self.load_lib,True);self.btn(r,self.ui('save_editor'),self.save_script,True);l.addLayout(r);self.tabs.addTab(w,self.ui('scripts'));self.libfind.textChanged.connect(self.refresh_lib);self.library.itemDoubleClicked.connect(lambda _:self.load_lib())
+        recent_page=QWidget();recent_card=QVBoxLayout(recent_page);recent_card.setContentsMargins(8,8,8,8);recent_card.setSpacing(CONTROL_GAP)
+        self.session_revision=0;self.session_loading=False
+        recent=QHBoxLayout();recent_title=QLabel(self.ui('visual_recent'));recent_title.setProperty('role','section');recent_title.setWordWrap(True);recent.addWidget(recent_title,1)
+        self.session_refresh=self.btn(recent,self.ui('refresh'),self.refresh_session_runs);self.session_refresh.setObjectName('sessionRefresh');recent_card.addLayout(recent)
+        self.session_status=QLabel(self.ui('nav_recent_idle'));self.session_status.setProperty('role','muted');self.session_status.setWordWrap(True);self.session_status.setTextFormat(Qt.TextFormat.PlainText);recent_card.addWidget(self.session_status)
+        self.session_runs=QListWidget();self.session_runs.setObjectName('sessionRuns');self.session_runs.setAccessibleName(self.ui('nav_recent'));self.session_runs.setMinimumHeight(64);recent_card.addWidget(self.session_runs,1);self.session_runs.hide();recent_card.addStretch(0)
+        self.session_runs.itemActivated.connect(self.open_session_run)
+        self.signals.sessionRunsDone.connect(self.session_runs_done,Qt.ConnectionType.QueuedConnection)
+        self.cwd.textChanged.connect(self.invalidate_session_runs)
+        self.tabs.addTab(recent_page,self.ui('history'))
+        right=QSplitter(Qt.Orientation.Vertical);right.setChildrenCollapsible(False);right.setOpaqueResize(True);right.setHandleWidth(SPLITTER_WIDTH);self.main_split=right;v.addWidget(right,1)
+        w=QWidget();self.editor_pane=w;l=QVBoxLayout(w);l.setContentsMargins(0,0,0,0);l.setSpacing(CONTROL_GAP);self.command_label=QLabel(self.ui('commands_initial'));configure_pane_title(self.command_label);r=QHBoxLayout();r.setSpacing(CONTROL_GAP);r.addWidget(self.command_label,1);self.inspector_label=QLabel();self.inspector_label.hide();r.addWidget(self.inspector_label);align_workbench_row(r);l.addLayout(r);self.editor=DropEditor();self.editor.setMinimumHeight(100);self.editor.setPlaceholderText(self.ui('editor_placeholder'));self.editor.setProperty('role','code');self.editor.setFont(code_font());self.editor.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap);l.addWidget(self.editor,1);self.editor.fileDropped.connect(self.load);self.outline_dirty=True;self.outline_timer=QTimer(self);self.outline_timer.setSingleShot(True);self.outline_timer.setInterval(OUTLINE_DELAY_MS);self.outline_timer.timeout.connect(self.refresh_outline);self.editor.textChanged.connect(self.invalidate_outline);self.inspector_timer=QTimer(self);self.inspector_timer.setSingleShot(True);self.inspector_timer.setInterval(220);self.inspector_timer.timeout.connect(self.update_inspector);self.editor.textChanged.connect(lambda:self.inspector_timer.start());self.editor_highlight=Highlight(self.editor.document());right.addWidget(w)
+        w=QWidget();self.output_pane=w;l=QVBoxLayout(w);l.setContentsMargins(0,0,0,0);l.setSpacing(CONTROL_GAP);r=QHBoxLayout();r.setSpacing(CONTROL_GAP);self.output_label=QLabel(self.ui('terminal_initial'));configure_pane_title(self.output_label);r.addWidget(self.output_label);r.addStretch();self.dense=QCheckBox(self.ui('dense'),w);self.dense.setChecked(self.settings.get('dense_output',True));self.wrap=QCheckBox(self.ui('wrap'),w);self.wrap.setChecked(self.settings.get('wrap_output',True));self.follow=QCheckBox(self.ui('follow'));self.follow.setChecked(True)
         # Follow remains a visible live control; rarely changed options live in More.
-        self.dense.hide();self.wrap.hide();r.addWidget(self.follow);self.btn(r,self.ui('find'),self.toggle_search)
-        l.addLayout(r);self.searchbar=QWidget();r=QHBoxLayout(self.searchbar);r.setContentsMargins(0,0,0,0);self.search=QLineEdit();self.search.setPlaceholderText(self.ui('find_output'));r.addWidget(self.search,1);self.find_previous=self.btn(r,'↑',lambda:self.find(True));self.find_next=self.btn(r,'↓',lambda:self.find(False));self.close_search=self.btn(r,'×',self.hide_search);l.addWidget(self.searchbar);self.searchbar.hide();self.search.returnPressed.connect(lambda:self.find(False));self.output=QPlainTextEdit();self.output.setReadOnly(True);self.output.setUndoRedoEnabled(False);self.output.setMaximumBlockCount(6000);self.output.setProperty('role','code');self.output_highlight=Highlight(self.output.document());l.addWidget(self.output,1);right.addWidget(w);right.setSizes([240,430]);right.setStretchFactor(1,1);self.wrap.toggled.connect(self.apply_wrap);self.dense.toggled.connect(self.reload_tail);self.apply_wrap()
-        r=QHBoxLayout();self.detail=QLabel(self.ui('import_hint'));r.addWidget(self.detail,1);self.copy_button(r,lambda mode:self.copy_report(mode));self.btn(r,self.ui('history'),self.history);v.addLayout(r)
+        self.dense.hide();self.wrap.hide();r.addWidget(self.follow);self.find_button=self.btn(r,self.ui('find'),self.toggle_search);self.find_button.setProperty('role','paneAction');align_workbench_row(r)
+        l.addLayout(r);self.searchbar=QWidget();r=QHBoxLayout(self.searchbar);r.setContentsMargins(0,0,0,0);r.setSpacing(CONTROL_GAP);self.search=QLineEdit();self.search.setPlaceholderText(self.ui('find_output'));r.addWidget(self.search,1);self.find_previous=self.btn(r,'↑',lambda:self.find(True));self.find_next=self.btn(r,'↓',lambda:self.find(False));self.close_search=self.btn(r,'×',self.hide_search);l.addWidget(self.searchbar);self.searchbar.hide();self.search.returnPressed.connect(lambda:self.find(False));self.output=QPlainTextEdit();self.output.setReadOnly(True);self.output.setUndoRedoEnabled(False);self.output.setMaximumBlockCount(6000);self.output.setProperty('role','code');self.output.setFont(code_font());self.output_highlight=Highlight(self.output.document(),log=True);l.addWidget(self.output,1);right.addWidget(w);right.setSizes([240,430]);right.setStretchFactor(1,1);self.wrap.toggled.connect(self.apply_wrap);self.dense.toggled.connect(self.reload_tail);self.apply_wrap()
+        r=QHBoxLayout();r.setSpacing(CONTROL_GAP);self.detail=QLabel(self.ui('import_hint'));self.detail.setTextFormat(Qt.TextFormat.PlainText);self.detail.setProperty('role','muted');self.detail.setWordWrap(True);self.detail.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);r.addWidget(self.detail,1);self.result_copy_button=self.copy_button(r,lambda mode:self.copy_report(mode));align_workbench_row(r);v.addLayout(r)
         # Keep the primary actions at their natural text-dependent width.
         # Fixed is a size policy, not a pixel width; Qt recalculates sizeHint
         # when the label, font or style changes.
@@ -923,22 +1364,46 @@ class App(QMainWindow):
             sizing = button.sizePolicy()
             sizing.setHorizontalPolicy(QSizePolicy.Policy.Fixed)
             button.setSizePolicy(sizing)
+        # Shell chrome may mirror; raw commands, reports and paths must remain LTR.
+        for field in (self.cwd,self.editor,self.output,self.search,self.libfind):
+            field.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+        for field in (self.editor,self.output):
+            option=field.document().defaultTextOption();option.setTextDirection(Qt.LayoutDirection.LeftToRight);field.document().setDefaultTextOption(option)
         self.configure_accessibility()
         self.build_more_menu()
         self.activity=ActivityBar(self);v.addWidget(self.activity)
         self.activity.set_reduced_motion(self.motion_action.isChecked())
         self.motion_action.toggled.connect(self.activity.set_reduced_motion)
-        self.statusBar().setSizeGripEnabled(False)
+        bar=self.statusBar();bar.setSizeGripEnabled(False)
+        self.status_text=QLabel();self.status_text.setTextFormat(Qt.TextFormat.PlainText);self.status_text.setSizePolicy(QSizePolicy.Policy.Ignored,QSizePolicy.Policy.Preferred);self.status_text.setContentsMargins(16,5,16,5);bar.addWidget(self.status_text,1)
         self.set_status('ready',self.ui('ready'))
         self.timer=QTimer(self);self.timer.setInterval(OUTPUT_INTERVAL_MS);self.timer.timeout.connect(self.flush_view);self.clock=QTimer(self);self.clock.setInterval(CLOCK_INTERVAL_MS);self.clock.timeout.connect(self.update_clock)
         for key,fn in [('Ctrl+O',self.open),('Ctrl+Return',self.run),('Ctrl+F',self.show_search),('F3',lambda:self.find(False)),('Shift+F3',lambda:self.find(True)),('Ctrl+Shift+C',lambda:self.copy_report('full'))]:QShortcut(QKeySequence(key),self).activated.connect(fn)
         self.tabs.currentChanged.connect(self.load_library_on_tab)
-        self.editor.textChanged.connect(self.invalidate_casual_result)
-        self.cwd.textChanged.connect(self.invalidate_casual_result)
-        self.apply_mode(self.mode)
+        self.auxiliary.hide()
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea,self.auxiliary)
+        self.auxiliary.hide()
+        self.auxiliary.visibilityChanged.connect(self.utilities_visibility_changed)
+        self.utilities_action.setChecked(False)
         QTimer.singleShot(0, self.start_initial_restore)
     def ui(self, key):
         return tr(key, self.ui_language)
+
+    def focus_session(self):
+        # Navigation never starts, changes or clears a task.
+        self.editor.setFocus()
+
+    def close_browser_bridge(self):
+        bridge=self.browser_bridge
+        if bridge is None:return
+        self.browser_bridge=None
+        bridge.shutdown();self.removeDockWidget(bridge);bridge.hide();bridge.deleteLater()
+    def open_browser_bridge(self):
+        if self.browser_bridge is None:
+            try:self.browser_bridge=BrowserBridge(self)
+            except (ImportError,OSError,RuntimeError,AttributeError):return self.error(self.ui('bridge_unavailable'))
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea,self.browser_bridge)
+        self.browser_bridge.show();self.browser_bridge.raise_()
 
     def configure_accessibility(self):
         # Keep the visible workbench compact; expose meaning to keyboard and assistive tools.
@@ -963,6 +1428,9 @@ class App(QMainWindow):
             a=parent.addAction(label);a.triggered.connect(lambda checked=False:fn())
             if edit:self.edit_controls.append(a)
             return a
+        self.utilities_action=menu.addAction(self.ui('show_sidebar'));self.utilities_action.setObjectName('workspace_utilities');self.utilities_action.setCheckable(True)
+        self.utilities_action.toggled.connect(self.set_utilities_visible)
+        menu.addSeparator()
         self.copy_ai_rules_action=action(menu,self.ui('copy_ai_rules'),self.copy_ai_rules,True)
         self.copy_ai_rules_action.setObjectName('copy_ai_rules')
         action(menu,self.ui('copy_session'),self.copy_session_context,True)
@@ -979,36 +1447,34 @@ class App(QMainWindow):
         reports=menu.addMenu(self.ui('reports'))
         # Named alternatives to modifier-click, including a conspicuous raw warning.
         self.copy_ai_action=action(reports,self.ui('copy_ai'),lambda:self.copy_report('ai'))
+        self.copy_detailed_action=action(reports,self.ui('copy_detailed'),lambda:self.copy_report('detailed'))
         self.copy_text_action=action(reports,self.ui('copy_compact'),lambda:self.copy_report('compact'))
         self.copy_raw_action=action(reports,self.ui('copy_raw'),lambda:self.copy_report('full'))
         reports.addSeparator()
         action(reports,self.ui('metrics_latest'),self.latest_metrics,True)
         action(reports,self.ui('open_latest'),lambda:self.open_path(REPORTS/'latest.txt'))
         action(reports,self.ui('folder'),lambda:self.open_path(REPORTS))
-        action(menu,self.ui('queue'),self.queue_dialog,True)
-        self.batch_action=action(menu,self.ui('batch_menu'),self.batch_dialog,True)
+        queue_menu=QMenu(self.queue_nav);self.queue_nav.setMenu(queue_menu)
+        self.batch_action=action(queue_menu,self.ui('batch_menu'),self.batch_dialog,True)
+        action(queue_menu,self.ui('queue'),self.queue_dialog,True)
         self.batch_action.setObjectName('batch_review')
+        action(menu,self.ui('plan_title'),self.local_plan,True)
+        action(menu,self.ui('runtime_diagnostics'),self.runtime_diagnostics,True)
         action(menu,self.ui('sha_file'),self.hash_tool,True)
         menu.addSeparator()
         # One settings entry for current preferences and future language/update tools.
-        self.settings_menu=menu.addMenu(self.ui('settings'));self.settings_menu.setObjectName('workbench_settings')
+        self.settings_menu=QMenu(self.ui('settings'),self.settings_nav);self.settings_nav.setMenu(self.settings_menu);self.settings_menu.setObjectName('workbench_settings')
         self.safety_action=action(self.settings_menu,self.ui('safety_settings'),self.safety_settings,True)
         self.safety_action.setObjectName('settings_safety')
         self.updates_action=action(self.settings_menu,self.ui('updates'),self.updates_settings,True)
         self.updates_action.setObjectName('settings_updates')
         self.language_action=action(self.settings_menu,self.ui('language_settings'),self.language_settings,True)
         self.language_action.setObjectName('settings_language')
-        self.mode_action=action(self.settings_menu,self.ui('mode_settings'),self.mode_settings,True)
-        self.mode_action.setObjectName('settings_mode')
-        self.settings_menu.addSeparator()
         self.theme_action=self.settings_menu.addAction(self.ui('light_theme'))
         self.theme_action.setObjectName('settings_light_theme');self.theme_action.setCheckable(True)
         self.theme_action.setChecked(view.saved_theme(self.settings)=='light')
         self.theme_action.toggled.connect(self.theme_settings)
         self.edit_controls.append(self.theme_action)
-        self.sidebar_action=self.settings_menu.addAction(self.ui('show_sidebar'));self.sidebar_action.setObjectName('settings_sidebar');self.sidebar_action.setCheckable(True)
-        self.sidebar_action.setChecked(sidebar_preference(self.settings,self.mode))
-        self.sidebar_action.toggled.connect(self.set_sidebar_visible)
         self.motion_action=self.settings_menu.addAction(self.ui('reduced_motion'));self.motion_action.setObjectName('settings_reduced_motion');self.motion_action.setCheckable(True)
         self.motion_action.setChecked(self.settings.get('reduced_motion') is True)
         self.motion_action.toggled.connect(lambda value: self.settings.update(reduced_motion=value))
@@ -1016,6 +1482,7 @@ class App(QMainWindow):
             a=self.settings_menu.addAction(label);a.setObjectName('settings_wrap' if control is self.wrap else 'settings_dense');a.setCheckable(True);a.setChecked(control.isChecked());a.toggled.connect(control.setChecked);control.toggled.connect(a.setChecked)
             if control is self.dense:self.edit_controls.append(a)
         action(menu,self.ui('find_in_output'),self.show_search)
+        for button in (self.queue_nav,self.more,self.settings_nav):button.setProperty('menuNav',True)
     def theme_settings(self, light):
         theme = 'light' if light else 'dark'
         previous = view.saved_theme(self.settings)
@@ -1032,58 +1499,63 @@ class App(QMainWindow):
         apply_theme(theme)
         self.editor_highlight.refresh_theme();self.output_highlight.refresh_theme()
         self.activity.update()
+        self.style_status()
         self.style_inspector()
-        self.refresh_casual()
-
-    def set_sidebar_visible(self, visible):
-        self.tabs.setVisible(visible)
-        key = 'show_sidebar_casual' if self.mode == 'casual' else 'show_sidebar'
-        self.settings[key] = bool(visible)
+    def set_utilities_visible(self, visible):
+        self.auxiliary.setVisible(visible)
         self.schedule_outline()
 
-    def apply_mode(self, mode):
-        # Only presentation changes: same editor, inspector, output, actions and engine.
-        if mode not in MODES:
-            raise ValueError('Unknown workspace mode')
-        self.mode = mode
-        casual = mode == 'casual'
-        self.mode_label.setText(f'{VERSION}  /  {mode.upper()}')
-        self.casual_hint.setVisible(casual)
-        self.openbtn.setText(self.ui('open_task') if casual else self.ui('open_file'))
-        self.pastebtn.setText(self.ui('paste_task') if casual else self.ui('paste_ai'))
-        self.runbtn.setText(self.ui('run_short') if casual else self.ui('run_commands'))
-        visible = sidebar_preference(self.settings, mode)
-        self.sidebar_action.setChecked(visible)
-        self.tabs.setVisible(visible)
+    def utilities_visibility_changed(self, visible):
+        self.utilities_action.blockSignals(True)
+        try:self.utilities_action.setChecked(visible)
+        finally:self.utilities_action.blockSignals(False)
         self.schedule_outline()
-        self.refresh_casual()
+        if visible:
+            self.load_library_on_tab(self.tabs.currentIndex())
 
-    def invalidate_casual_result(self):
-        self.casual_report_ready=False;self.casual_run_title=None
-        self.refresh_casual()
+    def invalidate_session_runs(self, *_):
+        self.session_revision+=1
+        self.session_runs.clear();self.session_runs.hide()
+        self.session_status.setText(self.ui('nav_recent_idle'))
 
-    def refresh_casual(self):
-        if self.mode != 'casual':
-            return
-        raw=self.editor.toPlainText()
-        stage=casual_stage(bool(raw.strip()),self.running,self.casual_report_ready)
-        title=casual_task_title(self.task,self.source,has_script=bool(raw.strip()),
-                               edited=raw!=self.loaded,language=self.ui_language)
-        if stage in ('run','result') and self.casual_run_title:
-            title=self.casual_run_title
-        if self.casual_title.text()!=title:self.casual_title.setText(title)
-        help_key={'import':'casual_import_help','review':'casual_review_help',
-                  'run':'casual_running_help','result':'casual_result_help'}[stage]
-        self.casual_help.setText(self.ui(help_key))
-        self.casual_hint.setAccessibleName(self.ui('casual_stage_accessible').format(stage=self.ui('casual_'+stage)))
-        style_state=(stage,current_theme())
-        if self.casual_style_state==style_state:return
-        self.casual_style_state=style_state
-        c=colors()
-        for key,label in self.casual_steps.items():
-            active=key==stage
-            label.setStyleSheet('QLabel { padding:3px; border-radius:4px; font-weight:%s; background:%s; color:%s; }' %
-                                ('600' if active else '400',c['accent'] if active else c['raised'],c['on_accent'] if active else c['muted']))
+    def refresh_session_runs(self):
+        # The archive is the durable source of truth. No archive scan at startup.
+        if self.session_loading or self.running or self.batch_active:return
+        cwd=self.cwd.text()
+        if not pathlib.Path(cwd).is_dir():
+            self.session_status.setText(self.ui('result_workspace'));return
+        self.session_loading=True;self.session_refresh.setEnabled(False)
+        self.session_revision+=1;token=(self.session_revision,cwd,REPORTS)
+        self.session_status.setText(self.ui('result_loading'))
+        def work():
+            try:packet=session.session_packet(token[2],cwd);error=None
+            except Exception:packet=None;error=True
+            try:self.signals.sessionRunsDone.emit(token,packet,error)
+            except RuntimeError:pass
+        threading.Thread(target=work,daemon=True).start()
+
+    def session_runs_done(self,token,packet,error):
+        self.session_loading=False;self.session_refresh.setEnabled(True)
+        if token!=(self.session_revision,self.cwd.text(),REPORTS):return
+        self.session_runs.clear()
+        if error:
+            self.session_runs.hide();self.session_status.setText(self.ui('result_read_error'));return
+        for row in packet['runs']:
+            name=row['report_file']
+            if not session.NAME.fullmatch(name):continue
+            title=row['intent'].get('title') or row.get('task_id') or row.get('command') or name
+            verdict=row['assertions_status'];state=self.ui('nav_recent_partial') if not row['report_complete'] else self.ui('nav_recent_cancelled') if row['cancelled'] else self.ui('nav_recent_exit').format(code=row['process_exit'] or '?')
+            item=QListWidgetItem(view.history_text(title,120)+'  ·  '+state+'  ·  '+verdict_text(verdict,self.ui_language))
+            item.setData(Qt.ItemDataRole.UserRole,(str(REPORTS/name),token[1],token[0]));item.setToolTip(item.text()+'\n'+name);self.session_runs.addItem(item)
+        self.session_runs.setVisible(self.session_runs.count()>0)
+        self.session_status.setText(self.ui('nav_recent_count').format(count=self.session_runs.count()))
+
+    def open_session_run(self,item):
+        path,cwd,revision=item.data(Qt.ItemDataRole.UserRole)
+        if cwd!=self.cwd.text() or revision!=self.session_revision:return
+        path=pathlib.Path(path)
+        if path.parent!=REPORTS or not session.NAME.fullmatch(path.name) or path.is_symlink():return
+        self.open_path(path)
 
     def show_search(self):
         self.searchbar.show();self.search.setFocus();self.search.selectAll()
@@ -1094,8 +1566,11 @@ class App(QMainWindow):
         else:self.show_search()
     def load_library_on_tab(self, index):
         self.schedule_outline()
+        if self.auxiliary.isHidden():return
         if index == 1:
             self.refresh_lib()
+        elif index == 2:
+            self.refresh_session_runs()
     def start_initial_restore(self):
         startup_mark('event_loop_ms')
         latest=REPORTS/'latest.txt'
@@ -1135,20 +1610,22 @@ class App(QMainWindow):
         if edit:self.edit_controls.append(b)
         return b
     def copy_button(self,layout,action):
-        button=self.btn(layout,self.ui('copy'),lambda:action(self.copy_modifier_mode()))
+        button=ReportCopyButton(self.ui('nav_copy_result'),action)
         button.setToolTip(self.ui('copy_tip'))
         button.setAccessibleName(self.ui('copy_accessible'))
         button.setAccessibleDescription(self.ui('copy_tip'))
+        layout.addWidget(button)
         return button
-    def copy_modifier_mode(self):
-        mods=QApplication.keyboardModifiers()
-        return copy_mode(bool(mods & Qt.KeyboardModifier.ControlModifier),bool(mods & Qt.KeyboardModifier.ShiftModifier))
     def set_status(self,kind,text):
-        bar=self.statusBar()
-        color=STATUS_COLORS[kind]
-        bar.setStyleSheet(f'QStatusBar {{background:{color}; color:#ffffff;}} QStatusBar QLabel {{background:transparent;color:#ffffff;}} QStatusBar::item {{border:0;}}')
-        bar.showMessage('●  '+text)
-    def error(self,s):QMessageBox.warning(self,'Command Relay',str(s))
+        self.status_kind=kind
+        self.style_status()
+        self.status_text.setText('●  '+text)
+    def style_status(self):
+        c=colors();kind=getattr(self,'status_kind','ready');color=c[{'ready':'muted','running':'info','success':'success','failed':'error','cancelled':'warning','stopping':'warning'}[kind]]
+        self.statusBar().setStyleSheet(f'QStatusBar {{background:{c["canvas"]}; color:{color}; border-top:1px solid {c["border"]};}} QStatusBar QLabel {{background:transparent;color:{color};}} QStatusBar::item {{border:0;}}')
+    def error(self,s):
+        box=QMessageBox(QMessageBox.Icon.Warning,'Command Relay',str(s),parent=self)
+        box.setTextFormat(Qt.TextFormat.PlainText);box.setStandardButtons(QMessageBox.StandardButton.Ok);box.exec()
     def browse(self):
         d=QFileDialog.getExistingDirectory(self,self.ui('runtime_workspace'),self.cwd.text())
         if d:self.cwd.setText(d)
@@ -1166,18 +1643,18 @@ class App(QMainWindow):
     def load_lib(self):
         if self.library.currentItem():self.load(str(self.lib/self.library.currentItem().text()))
     def save_script(self):
-        p,_=QFileDialog.getSaveFileName(self,self.ui('runtime_save_script'),str(self.lib/'script.txt'),'Scripts (*.txt *.ps1)')
+        p,_=QFileDialog.getSaveFileName(self,self.ui('runtime_save_script'),str(self.lib/'script.txt'),self.ui('filter_scripts_files'))
         if p:
             try:atomic_text(pathlib.Path(p),self.editor.toPlainText());self.refresh_lib()
             except OSError as e:self.error(e)
     def open(self):
-        if self.running:return
-        p,_=QFileDialog.getOpenFileName(self,self.ui('runtime_open_task'),'','Commands (*.txt *.ps1 *.md *.json);;All files (*)')
+        if self.running or self.batch_active:return
+        p,_=QFileDialog.getOpenFileName(self,self.ui('runtime_open_task'),'',self.ui('filter_commands')+';;'+self.ui('filter_all_files'))
         if p:self.load(p)
     def load(self,path):
-        if self.running:return
+        if self.running or self.batch_active:return
         try:
-            p=pathlib.Path(path);data=p.read_bytes();self.import_data(data,p.name,sha(data))
+            p=pathlib.Path(path);data=p.read_bytes();self.route_input(data,p.name,sha(data))
         except (OSError,ValueError,UnicodeError) as e:self.error(e)
     def import_data(self,data,name,digest=None):
         script,task=load_input(data);self.task=task;self.source=name;self.editor.setPlainText(script);self.loaded=self.editor.toPlainText();self.source_hash=digest;self.command_label.setText(self.ui('commands_prefix')+name);self.detail.setText(self.ui('imported') if task else self.ui('runtime_loaded')+name)
@@ -1188,16 +1665,21 @@ class App(QMainWindow):
         if task:
             task_id = task.get('task_id') or task.get('title') or name
             self.detail.setText(self.ui('runtime_task_loaded').format(task=task_id.replace('\n',' ').replace('\r',' ')[:80]))
-        self.invalidate_casual_result()
+    def route_input(self,data,name,digest=None):
+        if self.batch_active or self.running or self.stop_inflight or self.tool_busy or self.copy_busy:
+            return self.error(self.ui('batch_busy'))
+        if view.is_batch_packet(data):
+            self.review_batch(load_batch(data));return
+        self.import_data(data,name,digest)
     def paste(self):
         if not self.running:
-            try:self.import_data(QApplication.clipboard().text().encode(),'Clipboard')
-            except ValueError as e:self.error(e)
+            try:self.route_input(QApplication.clipboard().text().encode(),'Clipboard')
+            except (ValueError,UnicodeError) as e:self.error(e)
     def clear(self):
         if not self.running:self.import_data(b'','Untitled')
     def update_inspector(self, prepared=None):
         raw=self.editor.toPlainText()
-        result=privacy.inspect_script(raw if prepared is None else prepared)
+        result=privacy.safety_inspect(raw if prepared is None else prepared)
         level=result['level'];matches=result['matches']
         self.inspector_label.setVisible(level!='none')
         self.inspector_label.setText(self.ui('runtime_review_high') if level=='high' else self.ui('runtime_review_effects'))
@@ -1214,14 +1696,14 @@ class App(QMainWindow):
         self.schedule_outline()
 
     def schedule_outline(self):
-        if self.outline_dirty and not self.tabs.isHidden() and self.tabs.currentIndex()==0:
+        if self.outline_dirty and not self.auxiliary.isHidden() and self.tabs.currentIndex()==0:
             self.outline_timer.start()
         else:
             self.outline_timer.stop()
 
     def refresh_outline(self):
         self.outline_timer.stop()
-        if not self.outline_dirty or self.tabs.isHidden() or self.tabs.currentIndex()!=0:
+        if not self.outline_dirty or self.auxiliary.isHidden() or self.tabs.currentIndex()!=0:
             return
         self.outline.setUpdatesEnabled(False)
         try:
@@ -1276,38 +1758,45 @@ class App(QMainWindow):
         else:
             self.timer.stop();self.clock.stop()
         if b:
-            self.casual_report_ready=False
             self.set_status('running',self.ui('running'))
-        self.refresh_casual()
     def begin(self,name,header):
-        raw=self.editor.toPlainText()
-        self.casual_run_title=casual_task_title(self.task if name==self.source else {},name,
-            has_script=True,edited=name==self.source and raw!=self.loaded,language=self.ui_language)
         self.initial_restore_pending=False
         self.current=None;self.warm_result=None
-        REPORTS.mkdir(exist_ok=True);stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f');self.active=REPORTS/f'report-{stamp}.partial.txt';self.journal=self.active.open('x',encoding='utf-8',newline='');self.started=time.monotonic();self.cancelled=False;self.pending=[];self.stop_pending=False;self.decoder=codecs.getincrementaldecoder('utf-8')('replace');self.set_busy(True);self.output.clear();self.steps.clear();self.follow.setChecked(True);self.output_label.setText(self.ui('terminal_prefix')+name);self.append(header);self.tabs.setCurrentIndex(0)
+        REPORTS.mkdir(exist_ok=True);stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f');self.active=REPORTS/f'report-{stamp}.partial.txt';self.journal=self.active.open('x',encoding='utf-8',newline='');self.started=time.monotonic();self.cancelled=False;self.pending=[];self.stop_pending=False;self.decoder=codecs.getincrementaldecoder('utf-8')('replace');self.set_busy(True);self.output.clear();self.steps.clear();self.follow.setChecked(True);self.output_label.setText(self.ui('terminal_prefix')+name);self.append(header)
     def header(self,name,extra=''):
         return f'COMMAND RELAY REPORT\nStarted: {datetime.datetime.now().isoformat(timespec="seconds")}\nWorking directory: {self.cwd.text()}\nCommand file: {name}\n{extra}\n'
     def run(self):
         if self.batch_active:return
         if self.running or self.stop_inflight:return
+        if self.tool_busy:self.detail.setText(self.ui('result_tool_busy'));return
         if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
         raw=self.editor.toPlainText();cwd=self.cwd.text()
         if not raw.strip() or not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_script_workspace'))
         try:script=prepare(raw)
         except ValueError as e:return self.error(e)
         inspection=self.update_inspector(script)
-        if inspection['level']=='high':
-            labels='\n'.join('• '+m['label'] for m in inspection['matches'] if m['level']=='high')
-            answer=QMessageBox.question(self,self.ui('review_commands'),
-                self.ui('review_risk_intro')+labels+self.ui('review_risk_end'),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)
-            if answer!=QMessageBox.StandardButton.Yes:return
+        task_snapshot=json.dumps(self.task,sort_keys=True,ensure_ascii=True)
+        try:review=DispatchReview.capture(str(self.task.get('task_id','')),script.encode('utf-8-sig'),cwd,self.task.get('assertions') if raw==self.loaded else None,script=raw)
+        except (OSError,ValueError) as e:return self.error(e)
+        try:
+            approved=confirm_safety(self,(review,))
+            if approved is None:
+                self.detail.setText(self.ui('safety_gate_paused'));return
+            gate=SafetyGate(approved)
+        except (OSError,ValueError) as e:return self.error(e)
         source=self.source_hash if raw==self.loaded and self.source_hash else 'not applicable (pasted or edited)';taskid=self.task.get('task_id','').replace('\n',' ').replace('\r',' ')
-        metadata_obj=intelligence.run_metadata(cwd,self.task,raw==self.loaded);metadata_obj['inspector']=inspection
+        metadata_obj=intelligence.run_metadata(cwd,self.task,raw==self.loaded);metadata_obj['inspector']=inspection;metadata_obj['safety_gate']='explicit_once' if approved else 'no_high_risk_match'
         metadata=json.dumps(metadata_obj,ensure_ascii=True,separators=(',',':'),allow_nan=False)
         header=self.header(self.source,f'Command SHA256: {sha(raw.encode())}\nSource file SHA256: {source}\nPrepared script SHA256: {sha(script.encode("utf-8-sig"))}\n'+(f'Task ID: {taskid}\n' if taskid else '')+f'Relay metadata: {metadata}\n')
         if not self.confirm_repeat(comparison.previous_run(REPORTS,header)):return
+        # Recheck the exact editor and workspace after every modal confirmation.
+        if self.editor.toPlainText()!=raw or self.cwd.text()!=cwd or json.dumps(self.task,sort_keys=True,ensure_ascii=True)!=task_snapshot or self.running or self.batch_active or self.stop_inflight or self.copy_busy or self.tool_busy:
+            return self.error(self.ui('nav_changed'))
+        try:
+            if pathlib.Path(cwd).resolve(strict=True)!=pathlib.Path(review.workspace):return self.error(self.ui('nav_changed'))
+            if not gate.admit(review):
+                self.detail.setText(self.ui('safety_gate_paused'));return
+        except (OSError,ValueError) as e:return self.error(e)
         # Import never runs commands. Explicit Run (and confirmations, if needed) authorizes execution.
         try:
             with tempfile.NamedTemporaryFile(suffix='.ps1',delete=False,mode='wb') as f:self.temp=pathlib.Path(f.name);f.write(script.encode('utf-8-sig'))
@@ -1316,7 +1805,7 @@ class App(QMainWindow):
         except OSError as e:self.error(e);self.cleanup_temp();self.set_busy(False);self.set_status('failed',self.ui('start_failed'))
     def confirm_repeat(self, previous):
         status=previous['status']
-        if status in ('not_applicable','no_match'):return True
+        if not repeat_requires_confirmation(previous):return True
         if status=='matched':
             text=self.ui('repeat_report')+previous['report_file']+self.ui('repeat_verdict')+previous['verdict']
             if previous.get('process_exit') is not None:text+=self.ui('repeat_exit')+str(previous['process_exit'])
@@ -1335,6 +1824,7 @@ class App(QMainWindow):
     def run_git(self,action):
         if self.batch_active:return
         if self.running or self.stop_inflight:return
+        if self.tool_busy:self.detail.setText(self.ui('result_tool_busy'));return
         if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
         if not pathlib.Path(self.cwd.text()).is_dir():return self.error(self.ui('runtime_valid_workspace'))
         try:
@@ -1386,16 +1876,17 @@ class App(QMainWindow):
             finally:pathlib.Path(tmp).unlink(missing_ok=True)
             self.detail.setText(self.ui('runtime_saved')+archive.name)
         except OSError as e:self.current=self.active if self.active.exists() else self.current;self.detail.setText(self.ui('runtime_save_failed')+str(e))
-        self.casual_report_ready=bool(self.current and self.current!=self.active and self.current.is_file())
         self.set_busy(False)
         elapsed=int(time.monotonic()-self.started)
         kind='cancelled' if self.cancelled else 'success' if code==0 else 'failed'
         label=self.ui('runtime_cancelled') if self.cancelled else self.ui('runtime_exit_zero') if code==0 else self.ui('runtime_exit_failed').format(code=code)
         self.set_status(kind,f'{label}  |  {elapsed}s  |  PowerShell')
-        if self.current and self.current!=self.active:self.warm_export(self.current)
+        if self.current and self.current!=self.active:
+            if self.tabs.currentIndex()==2 and not self.auxiliary.isHidden():self.refresh_session_runs()
+            self.warm_export(self.current)
     def update_clock(self):
         if self.running:
-            self.statusBar().showMessage(f"●  {self.ui('clock_stopping' if self.stop_pending else 'clock_running')}  |  {int(time.monotonic()-self.started)}s  |  {self.ui('clock_log')}")
+            self.status_text.setText(f"●  {self.ui('clock_stopping' if self.stop_pending else 'clock_running')}  |  {int(time.monotonic()-self.started)}s  |  {self.ui('clock_log')}")
             if self.output.blockCount()>=6000:self.refresh_steps()
     def stop(self):
         if not self.running or not self.proc or self.stop_pending:return
@@ -1481,7 +1972,7 @@ class App(QMainWindow):
         p=path or self.current
         if not p:return self.error(self.ui('result_no_report'))
         if self.copy_busy:self.detail.setText(self.ui('result_copy_busy'));return
-        self.copy_busy=True;self.detail.setText(self.ui('runtime_copy_prepare').format(mode=mode))
+        self.copy_busy=True;self.detail.setText(self.ui('runtime_copy_prepare').format(mode=export_mode_text(mode,self.ui_language)))
         if mode=='ai':
             cached=self.warm_result
             if cached is not None and cached.path==p:
@@ -1494,19 +1985,19 @@ class App(QMainWindow):
         self.copy_busy=False
         if error:self.detail.setText(self.ui('runtime_copy_failed'));return self.error(error)
         mode,name,verdict,masked=info;QApplication.clipboard().setText(out)
-        self.detail.setText(self.ui('runtime_copied').format(mode=mode,name=name)+(self.ui('runtime_checks').format(verdict=verdict) if verdict and verdict!='NOT_REQUESTED' else '')+(self.ui('runtime_masked').format(count=masked) if masked else '')+(' | RAW' if mode=='full' else ''))
+        self.detail.setText(self.ui('runtime_copied').format(mode=export_mode_text(mode,self.ui_language),name=name)+(self.ui('runtime_checks').format(verdict=verdict_text(verdict,self.ui_language)) if verdict and verdict!='NOT_REQUESTED' else '')+(self.ui('runtime_masked').format(count=masked) if masked else '')+(' | RAW' if mode=='full' else ''))
         self.detail.setToolTip(self.ui('runtime_raw_warning') if mode=='full' else self.ui('runtime_masked_warning'))
     def start_tool(self,title,work):
         if self.tool_busy:return self.error(self.ui('result_tool_busy'))
         self.tool_busy=True;self.detail.setText(title+'…')
         def worker():
             try:self.signals.toolDone.emit(title,privacy.protect_packet(work()),None)
-            except Exception as e:self.signals.toolDone.emit(title,None,'Local tool could not prepare export')
+            except Exception as e:self.signals.toolDone.emit(title,None,self.ui('tool_export_failed'))
         threading.Thread(target=worker,daemon=True).start()
     def tool_done(self,title,result,error):
         self.tool_busy=False
-        if error:self.detail.setText(title+' failed');return self.error(error)
-        self.detail.setText(title+' ready — local only')
+        if error:self.detail.setText(self.ui('tool_failed_status').format(title=title));return self.error(error)
+        self.detail.setText(self.ui('tool_ready_status').format(title=title))
         text=json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False)
         d=QDialog(QApplication.activeModalWidget() or self);d.setWindowTitle(title);d.resize(850,580);l=QVBoxLayout(d)
         l.addWidget(QLabel(self.ui('result_mask')))
@@ -1554,7 +2045,7 @@ class App(QMainWindow):
     def project_context(self):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
-        self.start_tool('Project context',lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
+        self.start_tool(self.ui('project_context'),lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
     def language_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
             return self.error(self.ui('runtime_active_operation'))
@@ -1567,20 +2058,6 @@ class App(QMainWindow):
             return self.error(exc)
         self.settings['language'] = language
         QMessageBox.information(self, 'Command Relay', tr('language_saved', language))
-
-    def mode_settings(self):
-        if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error(self.ui('runtime_active_operation'))
-        mode = choose_workspace_mode(self.mode, self, self.ui_language,
-                                     self.motion_action.isChecked())
-        if mode is None or mode == self.mode:
-            return
-        try:
-            atomic_text(SETTINGS, json.dumps({**read_settings(), **self.settings, 'mode': mode}, ensure_ascii=False, indent=2))
-        except OSError as exc:
-            return self.error(exc)
-        self.settings['mode'] = mode
-        self.apply_mode(mode)
 
     def safety_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
@@ -1600,7 +2077,7 @@ class App(QMainWindow):
             self.update_handoff = handoff
             if not self.close():
                 self.update_handoff = None
-                self.error('Updater prepared but application did not close. Preserve the external bundle.')
+                self.error(self.ui('update_close_failed'))
 
     def github_prs(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
@@ -1610,27 +2087,76 @@ class App(QMainWindow):
         dialog.detect_repo()
         dialog.exec()
 
+    def local_plan(self):
+        def busy():return self.running or self.batch_active or self.stop_inflight or self.copy_busy or self.tool_busy
+        if busy():return self.error(self.ui('runtime_active_operation'))
+        cwd=self.cwd.text()
+        example=json.dumps({'schema':features.PLAN_SCHEMA,'operations':list(features.PLAN_OPERATIONS)},indent=2)
+        text,ok=QInputDialog.getMultiLineText(self,self.ui('plan_title'),self.ui('plan_input'),example)
+        if not ok:return
+        try:reviewed=features.ReviewedLocalPlan(text.encode('utf-8'),cwd)
+        except (OSError,ValueError):return self.error(self.ui('plan_invalid'))
+        labels=dict(zip(features.PLAN_OPERATIONS,('plan_inventory','plan_disk','plan_markers')))
+        notice=self.ui('plan_review')+'\n\n'+str(reviewed.root)+'\n'+reviewed.plan.digest+'\n\n'+'\n'.join(self.ui(labels[op]) for op in reviewed.plan.operations)
+        if QMessageBox.question(self,self.ui('plan_title'),notice,QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)!=QMessageBox.StandardButton.Yes:return
+        if busy() or self.cwd.text()!=cwd:return self.error(self.ui('plan_invalid'))
+        self.tool_busy=True
+        try:
+            dialog=LocalPlanDialog(self,reviewed);dialog.begin();dialog.exec()
+            result,error=dialog.outcome,getattr(dialog,'error',self.ui('plan_invalid'));dialog.deleteLater()
+        finally:self.tool_busy=False
+        if result is None:return self.error(error)
+        self.tool_done(self.ui('plan_title'),privacy.protect_packet(result),None)
+
+    def runtime_diagnostics(self):
+        if self.running or self.batch_active or self.stop_inflight or self.copy_busy:
+            return self.error(self.ui('runtime_active_operation'))
+        cwd=self.cwd.text()
+        self.start_tool(self.ui('runtime_diagnostics'),lambda:features.runtime_diagnostics(cwd,REPORTS))
     def dashboard(self):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
-        self.start_tool('Git dashboard',lambda:features.git_dashboard(cwd))
+        self.start_tool(self.ui('git_dashboard'),lambda:features.git_dashboard(cwd))
     def ai_context(self):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
-        d=QDialog(self);d.setWindowTitle('AI context — selected data');d.resize(620,350);l=QVBoxLayout(d)
-        l.addWidget(QLabel('Select text files within the workspace. Review all content for secrets before sharing.'))
-        files=QListWidget();l.addWidget(files,1);diff=QCheckBox('Include staged and unstaged Git diff');l.addWidget(diff)
+        d=QDialog(self);d.setWindowTitle(self.ui('context_title'));d.resize(620,350);l=QVBoxLayout(d)
+        notice=QLabel(self.ui('context_notice'));notice.setWordWrap(True);l.addWidget(notice)
+        files=QListWidget();l.addWidget(files,1);diff=QCheckBox(self.ui('context_diff'));l.addWidget(diff)
         paths=[]
         def add():
-            p,_=QFileDialog.getOpenFileNames(d,'Choose workspace files',cwd)
+            p,_=QFileDialog.getOpenFileNames(d,self.ui('context_choose_files'),cwd)
             for x in p:
                 if x not in paths:paths.append(x);files.addItem(x)
         def remove():
             i=files.currentRow()
             if i>=0:paths.pop(i);files.takeItem(i)
-        row=QHBoxLayout();self.btn(row,'Add files…',add);self.btn(row,'Remove selected',remove);row.addStretch();self.btn(row,'Preview',d.accept);self.btn(row,'Cancel',d.reject);l.addLayout(row)
+        row=QHBoxLayout();self.btn(row,self.ui('context_add_files'),add);self.btn(row,self.ui('context_remove'),remove);row.addStretch();self.btn(row,self.ui('context_preview'),d.accept);self.btn(row,self.ui('mode_cancel'),d.reject);l.addLayout(row)
         if d.exec()==QDialog.DialogCode.Accepted and (paths or diff.isChecked()):
-            selected=tuple(paths);include=diff.isChecked();self.start_tool('AI context',lambda:features.context_packet(cwd,selected,include))
+            selected=tuple(paths);include=diff.isChecked();self.start_tool(self.ui('context_result_title'),lambda:features.context_packet(cwd,selected,include))
+    def about_dialog(self):
+        d=QDialog(self);d.setWindowTitle(self.ui('about_title'));d.resize(480,260)
+        layout=QVBoxLayout(d)
+        for value in ('Command Relay',self.ui('about_version').format(version=VERSION),self.ui('about_description')):
+            label=QLabel(value);label.setTextFormat(Qt.TextFormat.PlainText);label.setWordWrap(True);layout.addWidget(label)
+        try: location=str(features.user_data_root() / 'skills')
+        except ValueError as exc: location=str(exc)
+        path=QLineEdit(location);path.setReadOnly(True);path.setAccessibleName(self.ui('about_user_data'))
+        layout.addWidget(QLabel(self.ui('about_user_data')));layout.addWidget(path);layout.addStretch()
+        row=QHBoxLayout();self.btn(row,self.ui('about_github'),lambda:QDesktopServices.openUrl(QUrl('https://github.com/DEViANCEVxXXxM/command-relay')));row.addStretch();self.btn(row,self.ui('skills_close'),d.reject);layout.addLayout(row)
+        d.exec()
+
+    def skills_dialog(self):
+        if self.batch_active or self.running or self.stop_inflight or self.tool_busy or self.copy_busy:
+            return self.error(self.ui('batch_busy'))
+        try: dialog=UserSkillsDialog(self)
+        except (OSError,ValueError) as exc: return self.error(exc)
+        if dialog.exec()==QDialog.DialogCode.Accepted and dialog.chosen is not None:
+            skill=dialog.chosen
+            # Template enters existing review; never dispatch, change workspace,
+            # or infer permission from local installation of a skill.
+            self.import_data(skill.task_bytes, skill.filename, sha(skill.task_bytes))
+
     def batch_dialog(self):
         if self.batch_active or self.running or self.stop_inflight or self.tool_busy or self.copy_busy:
             return self.error(self.ui('batch_busy'))
@@ -1641,9 +2167,14 @@ class App(QMainWindow):
                 plan = load_batch(stream.read(PACKET_LIMIT + 1))
         except (OSError, ValueError, UnicodeError) as error:
             return self.error(self.ui('batch_error') + ': ' + str(error))
+        self.review_batch(plan)
+    def review_batch(self,plan):
+        if self.batch_active or self.running or self.stop_inflight or self.tool_busy or self.copy_busy:
+            return self.error(self.ui('batch_busy'))
         self.batch_active = True
         try: BatchReviewDialog(plan, self, self.cwd.text()).exec()
         finally: self.batch_active = False
+        if self.tabs.currentIndex()==2 and not self.auxiliary.isHidden():self.refresh_session_runs()
     def queue_dialog(self):
         if self.running:return
         d=QDialog(self);d.setWindowTitle(self.ui('result_queue'));d.resize(650,380);l=QVBoxLayout(d)
@@ -1653,7 +2184,7 @@ class App(QMainWindow):
             items.clear()
             for name,data,task in self.task_queue:items.addItem(name+'  |  '+(task.get('task_id') or task.get('title') or 'script'))
         def add():
-            files,_=QFileDialog.getOpenFileNames(d,self.ui('result_add_tasks'),'','Commands (*.txt *.ps1 *.md *.json)')
+            files,_=QFileDialog.getOpenFileNames(d,self.ui('result_add_tasks'),'',self.ui('filter_commands'))
             for path in files:
                 try:
                     data=features.read_bounded(path,PACKET_LIMIT);script,task=load_input(data)
@@ -1695,7 +2226,7 @@ class App(QMainWindow):
         table.setHorizontalHeaderLabels([self.ui('history_time'),self.ui('history_task'),self.ui('result_process_status'),self.ui('history_duration')]);table.verticalHeader().hide()
         table.setColumnWidth(0,92);table.setColumnWidth(2,145);table.setColumnWidth(3,100)
         table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
-        table.setColumnHidden(3,self.mode=='casual');table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection);table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         l.addWidget(table,1)
         page_row=QHBoxLayout();page_row.addStretch()
@@ -1708,7 +2239,7 @@ class App(QMainWindow):
             label=QLabel();label.setObjectName(name);label.setTextFormat(Qt.TextFormat.PlainText);label.setWordWrap(True)
             if role:label.setProperty('role',role)
             return label
-        heading=plain('historyHeading','casualTitle');heading.setText(self.ui('history_details'));l.addWidget(heading)
+        heading=plain('historyHeading','historyTitle');heading.setText(self.ui('history_details'));l.addWidget(heading)
         details=plain('historyDetails');details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse);l.addWidget(details)
         verdict=plain('historyAssertions');l.addWidget(verdict)
         hint=plain('historyHint','muted');l.addWidget(hint)
@@ -1730,7 +2261,7 @@ class App(QMainWindow):
                 if any(p.stat().st_size>4_000_000 for p in a):return self.error(self.ui('result_large_report'))
                 texts=[compact_report(p.read_text(encoding='utf-8',errors='replace')).splitlines() for p in a]
                 if any(len(x)>10000 for x in texts):return self.error(self.ui('result_too_many'))
-                diff='\n'.join(difflib.unified_diff(*texts,fromfile=a[0].name,tofile=a[1].name,lineterm=''));d=QDialog(dlg);d.setWindowTitle(self.ui('history_compare'));d.resize(950,600);ll=QVBoxLayout(d);ed=QPlainTextEdit(diff or self.ui('result_no_diff'));ed.setReadOnly(True);ed.setFont(QFont('Consolas',10));ll.addWidget(ed);d.exec()
+                diff='\n'.join(difflib.unified_diff(*texts,fromfile=a[0].name,tofile=a[1].name,lineterm=''));d=QDialog(dlg);d.setWindowTitle(self.ui('history_compare'));d.resize(950,600);ll=QVBoxLayout(d);ed=QPlainTextEdit(diff or self.ui('result_no_diff'));ed.setReadOnly(True);ed.setFont(code_font());ll.addWidget(ed);d.exec()
             except OSError as e:self.error(e)
         def copy_raw():
             a=selected()
@@ -1753,7 +2284,7 @@ class App(QMainWindow):
             state,passed,total=result
             if state=='NOT_REQUESTED':text=self.ui('history_assert_none')
             elif state=='LIMITED':text=self.ui('history_assert_limited')
-            else:text=self.ui('history_assert_status').format(status=state,passed=passed,total=total)
+            else:text=self.ui('history_assert_status').format(status=verdict_text(state,self.ui_language),passed=passed,total=total)
             verdict.setText(text)
         def request_detail():
             nonlocal detail_busy,loaded_detail
@@ -1854,13 +2385,15 @@ class App(QMainWindow):
             closed=True;self.signals.historyDone.disconnect(loaded);filter_timer.stop()
     def closeEvent(self,event):
         if self.batch_active:event.ignore();return
-        if self.running or self.stop_inflight or self.tool_busy or self.copy_busy:self.error('Wait for local tools or stop the current run before closing');event.ignore();return
-        try:atomic_text(SETTINGS,json.dumps({**self.settings,'workspace':self.cwd.text(),'library':str(self.lib),'wrap_output':self.wrap.isChecked(),'dense_output':self.dense.isChecked(),'mode':self.mode},ensure_ascii=False,indent=2))
+        if self.running or self.stop_inflight or self.tool_busy or self.copy_busy:self.error(self.ui('close_busy'));event.ignore();return
+        try:atomic_text(SETTINGS,json.dumps({**self.settings,'workspace':self.cwd.text(),'library':str(self.lib),'wrap_output':self.wrap.isChecked(),'dense_output':self.dense.isChecked(),},ensure_ascii=False,indent=2))
         except OSError:pass
+        self.close_browser_bridge()
         event.accept()
 
 def main():
     set_app_identity()
+    QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts)
     app=QApplication(sys.argv);app.setApplicationName('Command Relay');app.setApplicationVersion(VERSION)
     icon=QIcon(str(ASSETS/'relay-icon.ico'))
     if icon.isNull():icon=QIcon(str(ASSETS/'relay-icon.png'))
@@ -1876,20 +2409,20 @@ def main():
                                     lambda selected: None)
         if language is None:
             return 0
-        mode = startup_mode(settings, lambda: choose_workspace_mode(
-            language=language, reduced_motion=settings.get('reduced_motion') is True))
-        if mode is None:
-            return 0
-        if language != saved_language(settings) or mode != saved_mode(settings):
-            atomic_text(SETTINGS, json.dumps({**settings, 'language': language, 'mode': mode},
-                                             ensure_ascii=False, indent=2))
+        updated = workspace_settings(settings)
+        updated['language'] = language
+        if updated != settings:
+            atomic_text(SETTINGS, json.dumps(updated, ensure_ascii=False, indent=2))
     except (OSError, ValueError) as exc:
         QMessageBox.warning(None, 'Command Relay', str(exc))
         return 1
+    app.setLayoutDirection(Qt.LayoutDirection.RightToLeft if locale_direction(language)=='rtl' else Qt.LayoutDirection.LeftToRight)
     startup_mark('terms_accepted_ms')
     w=App()
     if not icon.isNull():w.setWindowIcon(icon)
-    startup_mark('widgets_created_ms');w.show();startup_mark('show_called_ms');code = app.exec()
+    startup_mark('widgets_created_ms');w.show();startup_mark('show_called_ms')
+    try:code = app.exec()
+    finally:w.close_browser_bridge()
     return w.update_handoff if code == 0 and w.update_handoff is not None else code
 
 

@@ -1989,12 +1989,20 @@ class UpdateLifecycleIntegrationTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(exist_ok=True)
             path.write_bytes(data)
+        # Real independent signed install and recovery also preserve a separate
+        # per-account extension store. No real profile or real policy is touched.
+        from command_relay.relay_features import UserSkillStore
+        self.skill_store = UserSkillStore(self.root.parent / 'test-profile' / 'CommandRelay' / 'User')
+        self.skill = self.skill_store.install(json.dumps({'schema':'command-relay/skill-v1',
+            'id':'personal-workflow','revision':1,'title':'Personal workflow',
+            'description':'Preservation fixture','instructions':'Retain these instructions.'}).encode('utf-8'))
         self.bundle = u.prepare_update_handoff(self.root, self.f.old, self.f.new)
         self.marker = self.root / u.UPDATE_TRANSACTION_NAME
 
     def assert_tree(self, files):
         for name, data in {**files, **self.data}.items():
             self.assertEqual((self.root / name).read_bytes(), data, name)
+        self.assertEqual(self.skill_store.read(self.skill.filename).raw, self.skill.raw)
 
     def run_child(self, action, tokens, *, crash=False, gui=False):
         import subprocess

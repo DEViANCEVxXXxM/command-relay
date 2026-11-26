@@ -7,13 +7,13 @@ from .relay_core import report_metadata
 # Shared semantic colors. Explicit preference; unknown values retain the established dark theme.
 THEMES = ('dark', 'light')
 _THEME_COLORS = {
-    'dark': dict(canvas='#181a1e', surface='#212429', raised='#292d33', hover='#353b44',
-                 border='#424951', text='#e2e5e9', muted='#aab2bd', disabled='#87909b',
+    'dark': dict(canvas='#12161c', surface='#1b222c', raised='#283341', hover='#354355',
+                 border='#354252', text='#f1f4f8', muted='#b4c0cf', disabled='#87909b',
                  accent='#1767b0', accent_hover='#145a98', focus='#82bfff', selection='#284b70',
                  selected_text='#ffffff', on_accent='#ffffff', thumb='#697582',
                  info='#85baff', error='#ff9b90', success='#a9d6a4', warning='#f2cc85', metric='#a7d9fa'),
-    'light': dict(canvas='#f3f5f7', surface='#ffffff', raised='#e8edf2', hover='#dce4ed',
-                  border='#a0acba', text='#222b36', muted='#455568', disabled='#596879',
+    'light': dict(canvas='#f5f7fa', surface='#ffffff', raised='#e6edf5', hover='#d9e5f2',
+                  border='#c8d3e1', text='#202c3c', muted='#45566c', disabled='#596879',
                   accent='#1767b0', accent_hover='#145a98', focus='#1767b0', selection='#d0e4fa',
                   selected_text='#17283b', on_accent='#ffffff', thumb='#8593a4',
                   info='#15559a', error='#a12d28', success='#216641', warning='#78520b', metric='#225d86'),
@@ -135,3 +135,38 @@ def history_assertions(path):
     result=result_packet(raw.decode('utf-8',errors='replace'),path.name)['assertions']
     checks=result['checks']
     return (result['status'],sum(c['status']=='PASS' for c in checks),len(checks))
+
+
+def task_intent_preview(task, unchanged):
+    """Descriptive packet fields are untrusted and stale after editing."""
+    if not unchanged or not isinstance(task,dict):return None
+    purpose=history_text(task.get('purpose',''),600)
+    expected=history_text(task.get('expected',''),400)
+    return (purpose,expected) if purpose or expected else None
+
+
+def is_batch_packet(data):
+    """Dispatch supported JSON only; never execute result or unknown schemas."""
+    import json
+    from .relay_core import PACKET_LIMIT
+    if len(data)>PACKET_LIMIT:return False
+    try:
+        text=data.decode('utf-16') if data.startswith((b'\xff\xfe',b'\xfe\xff')) else data.decode('utf-8-sig')
+        if not text.lstrip().startswith('{'):return False
+        obj=json.loads(text)
+        return isinstance(obj,dict) and obj.get('schema')=='command-relay/batch-v1'
+    except (ValueError,UnicodeError,RecursionError):return False
+
+
+def semantic_log_role(text):
+    """Presentation only. Never derive verified assertions from colored lines."""
+    import re
+    t=text.strip()[:8192]
+    if re.match(r'^@step\b',t,re.I):return 'info'
+    # Scope notes often mention errors or failures as limitations, not verdicts.
+    if re.match(r'^LIMITATION=',t):return 'warning'
+    if re.search(r'\b[A-Z][A-Z0-9_]*_PASS=False\b|\b(?:FAIL(?:ED|URE)?|ERROR|Traceback)\b|Process exit code: (?!0$)',t,re.I):return 'error'
+    if re.search(r'\b(?:WARNING|DeprecationWarning|WARNING:|INCONCLUSIVE|UNVERIFIED)\b|Cancelled: True',t,re.I):return 'warning'
+    if re.search(r'\b[A-Z][A-Z0-9_]*_PASS=True\b|\b(?:PASS|PASSED|SUCCESS)\b|Process exit code: 0$',t,re.I):return 'success'
+    if re.match(r'^[A-Z][A-Z0-9_]+=|^(?:Task ID|Command SHA256|Prepared script SHA256|Working directory):',t):return 'metric'
+    return None

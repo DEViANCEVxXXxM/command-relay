@@ -170,3 +170,30 @@ def inspect_script(script):
     matches=[{'level':level,'label':label,'lines':lines} for (level,label),lines in grouped.items()]
     level='high' if any(m['level']=='high' for m in matches) else 'review' if matches or limited else 'none'
     return {'level':level,'matches':matches,'scan_limited':limited,'note':'Heuristic text scan only; not a sandbox or safety guarantee. Aliases, indirect commands and effects can be missed.'}
+
+
+# Additional conservative safety hints. This is not a language parser or a sandbox.
+_SAFETY_RULES = tuple((label, re.compile(pattern, re.I)) for label, pattern in (
+    ('System configuration change', r"\b(?:reg(?:\.exe)?\s+(?:add|delete|import)|sc(?:\.exe)?\s+(?:delete|config|stop)|Stop-Service|Disable-ScheduledTask|Unregister-ScheduledTask|shutdown(?:\.exe)?|Restart-Computer|Stop-Computer|takeown(?:\.exe)?|icacls(?:\.exe)?|Clear-EventLog|wevtutil(?:\.exe)?\s+cl)\b"),
+    ('Destructive file or disk operation', r"\b(?:Clear-RecycleBin|Remove-Partition|Delete-Volume)\b|\b(?:rd|rmdir|del|erase)(?:\.exe)?\s+[^\r\n]*(?:/s\b|/q\b|\*)|\b(?:shutil\s*\.\s*rmtree|os\s*\.\s*removedirs)\s*\("),
+    ('Dynamic or encoded command execution', r"\b(?:Invoke-Command|Add-Type|mshta(?:\.exe)?|rundll32(?:\.exe)?|regsvr32(?:\.exe)?)\b|\b(?:eval|exec)\s*\(|\bFromBase64String\s*\("),
+    ('System security or privilege change', r"\b(?:net(?:\.exe)?\s+(?:user|localgroup)|Set-Acl|Disable-WindowsOptionalFeature|Remove-MpPreference)\b"),
+))
+
+def safety_inspect(script):
+    """Bounded prelaunch risk assessment, with no evaluation of code or intent."""
+    result = inspect_script(script)
+    lines = script[:MAX_SCRIPT].splitlines()
+    groups = { (m['level'], m['label']): set(m['lines']) for m in result['matches'] }
+    for label, pattern in _SAFETY_RULES:
+        found = []
+        for i, line in enumerate(lines, 1):
+            if not line.lstrip().startswith('#') and pattern.search(line):
+                found.append(i)
+                if len(found) >= 5: break
+        if found: groups.setdefault(('high', label), set()).update(found)
+    if result['scan_limited']:
+        groups[('high', 'Incomplete safety inspection')] = set()
+    result['matches'] = [{'level': level, 'label': label, 'lines': sorted(nums)[:5]} for (level, label), nums in groups.items()]
+    if any(m['level'] == 'high' for m in result['matches']): result['level'] = 'high'
+    return result
