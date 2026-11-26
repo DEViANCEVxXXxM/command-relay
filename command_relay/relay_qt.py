@@ -12,7 +12,7 @@ from .relay_core import (
     prepare, read_settings, sha,
 )
 from .relay_version import VERSION
-from .relay_terms import confirm_usage_terms
+from .relay_terms import confirm_usage_terms, choose_language, saved_language, startup_language, tr
 from .relay_windows import apply_neutral_chrome, set_app_identity
 from . import relay_features as features
 from . import relay_intelligence as intelligence
@@ -539,6 +539,8 @@ class App(QMainWindow):
         self.safety_action.setObjectName('settings_safety')
         self.updates_action=action(self.settings_menu,'Updates…',self.updates_settings,True)
         self.updates_action.setObjectName('settings_updates')
+        self.language_action=action(self.settings_menu,'Startup language… / Язык запуска…',self.language_settings,True)
+        self.language_action.setObjectName('settings_language')
         self.settings_menu.addSeparator()
         self.sidebar_action=self.settings_menu.addAction('Show sidebar');self.sidebar_action.setObjectName('settings_sidebar');self.sidebar_action.setCheckable(True)
         self.sidebar_action.setChecked(self.settings.get('show_sidebar',True) is not False)
@@ -960,6 +962,19 @@ class App(QMainWindow):
         cwd=self.cwd.text()
         if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
         self.start_tool('Project context',lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
+    def language_settings(self):
+        if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
+            return self.error('Finish the active operation first')
+        language = choose_language(saved_language(self.settings), self)
+        if language is None or language == saved_language(self.settings):
+            return
+        try:
+            atomic_text(SETTINGS, json.dumps({**read_settings(), 'language': language}, ensure_ascii=False, indent=2))
+        except OSError as exc:
+            return self.error(exc)
+        self.settings['language'] = language
+        QMessageBox.information(self, 'Command Relay', tr('language_saved', language))
+
     def safety_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
             return self.error('Finish the active operation first')
@@ -1121,7 +1136,16 @@ def main():
     app.setStyle('Fusion');app.setStyleSheet(STYLE)
     chrome=NeutralChrome(app);app.installEventFilter(chrome)
     startup_mark('qt_initialized_ms')
-    if not confirm_usage_terms(ROOT):
+    settings = read_settings()
+    try:
+        language = startup_language(settings, choose_language,
+                                    lambda selected: confirm_usage_terms(ROOT, selected),
+                                    lambda selected: atomic_text(SETTINGS, json.dumps(
+                                        {**settings, 'language': selected}, ensure_ascii=False, indent=2)))
+    except (OSError, ValueError) as exc:
+        QMessageBox.warning(None, 'Command Relay', str(exc))
+        return 1
+    if language is None:
         return 0
     startup_mark('terms_accepted_ms')
     w=App()

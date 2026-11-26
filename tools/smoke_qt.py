@@ -13,7 +13,7 @@ from PySide6.QtCore import QTimer, Qt, QPoint, QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox, QFileDialog
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
-from command_relay.relay_terms import confirm_usage_terms, disclaimer_text
+from command_relay.relay_terms import confirm_usage_terms, disclaimer_text, choose_language, tr
 
 app = QApplication([])
 root = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ def settle_layout():
 
 
 # Exercise the real modal dialog without opening a workspace or running commands.
-for action, expected in [('terms_decline', False), ('close', False), ('terms_agree', True)]:
+for language, action, expected in [('en', 'terms_decline', False), ('ru', 'close', False), ('en', 'terms_agree', True), ('ru', 'terms_agree', True)]:
     errors = []
     def interact():
         dialog = QApplication.activeModalWidget()
@@ -35,7 +35,8 @@ for action, expected in [('terms_decline', False), ('close', False), ('terms_agr
             assert isinstance(dialog, QDialog)
             notice = dialog.findChild(QPlainTextEdit)
             assert notice.isReadOnly()
-            assert notice.toPlainText() == disclaimer_text(root)
+            assert notice.toPlainText() == disclaimer_text(root, language)
+            assert dialog.findChild(QPushButton, 'terms_agree').text() == tr('terms_agree', language)
             assert dialog.findChild(QPushButton, 'terms_decline').isDefault()
             assert not dialog.findChild(QPushButton, 'terms_agree').isDefault()
             if action == 'close':
@@ -47,9 +48,28 @@ for action, expected in [('terms_decline', False), ('close', False), ('terms_agr
             if dialog is not None:
                 dialog.reject()
     QTimer.singleShot(0, interact)
-    assert confirm_usage_terms(root) == expected
+    assert confirm_usage_terms(root, language) == expected
     assert not errors, errors
-print('Qt startup disclaimer checks passed (accept, decline, close).')
+from PySide6.QtWidgets import QInputDialog, QComboBox
+for selected, expected in [('ru', 'ru'), (None, None)]:
+    errors = []
+    def select():
+        dialog = QApplication.activeModalWidget()
+        try:
+            assert isinstance(dialog, QInputDialog)
+            if selected is None:
+                dialog.reject()
+            else:
+                dialog.findChild(QComboBox).setCurrentIndex(1)
+                dialog.accept()
+        except Exception as exc:
+            errors.append(exc)
+            if dialog is not None:
+                dialog.reject()
+    QTimer.singleShot(0, select)
+    assert choose_language() == expected
+    assert not errors, errors
+print('Qt startup locale and disclaimer checks passed (English/Russian, select, cancel, accept, decline, close).')
 # Disable local restoration; no reports or commands are opened/executed.
 with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(relay_qt.App, 'start_initial_restore'):
     window = relay_qt.App()
@@ -80,8 +100,16 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     assert window.safety_action in window.settings_menu.actions()
     assert window.safety_action not in window.more.menu().actions()
     actions = {a.objectName(): a for a in window.settings_menu.actions() if a.objectName()}
-    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
+    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_language', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
     assert actions['settings_safety'].isEnabled()
+    with patch.object(relay_qt, 'choose_language', return_value=None), patch.object(relay_qt, 'atomic_text') as save:
+        actions['settings_language'].trigger()
+        save.assert_not_called()
+    with patch.object(relay_qt, 'choose_language', return_value='ru'), patch.object(relay_qt, 'atomic_text') as save, patch.object(QMessageBox, 'information'):
+        actions['settings_language'].trigger()
+        assert json.loads(save.call_args.args[1])['language'] == 'ru'
+        assert window.settings['language'] == 'ru'
+    window.settings.pop('language', None)
     for name, control in [('settings_wrap', window.wrap), ('settings_dense', window.dense)]:
         action = actions[name]
         initial = control.isChecked()
