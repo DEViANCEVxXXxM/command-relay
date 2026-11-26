@@ -4,6 +4,32 @@ import os
 from pathlib import Path
 from .relay_core import report_metadata
 
+# Shared semantic colors. Explicit preference; unknown values retain the established dark theme.
+THEMES = ('dark', 'light')
+_THEME_COLORS = {
+    'dark': dict(canvas='#181a1e', surface='#212429', raised='#292d33', hover='#353b44',
+                 border='#424951', text='#e2e5e9', muted='#aab2bd', disabled='#87909b',
+                 accent='#1767b0', accent_hover='#145a98', focus='#82bfff', selection='#284b70',
+                 selected_text='#ffffff', on_accent='#ffffff', thumb='#697582',
+                 info='#85baff', error='#ff9b90', success='#a9d6a4', warning='#f2cc85', metric='#a7d9fa'),
+    'light': dict(canvas='#f3f5f7', surface='#ffffff', raised='#e8edf2', hover='#dce4ed',
+                  border='#a0acba', text='#222b36', muted='#455568', disabled='#596879',
+                  accent='#1767b0', accent_hover='#145a98', focus='#1767b0', selection='#d0e4fa',
+                  selected_text='#17283b', on_accent='#ffffff', thumb='#8593a4',
+                  info='#15559a', error='#a12d28', success='#216641', warning='#78520b', metric='#225d86'),
+}
+
+
+def saved_theme(settings):
+    value = settings.get('theme')
+    return value if isinstance(value, str) and value in THEMES else 'dark'
+
+
+def theme_colors(theme):
+    """Return independent tokens; invalid preferences cannot produce arbitrary QSS."""
+    return dict(_THEME_COLORS[saved_theme({'theme': theme})])
+
+
 MAX_CHARS = 512_000
 MAX_BLOCKS = 6000
 TRIM_TARGET = 384_000
