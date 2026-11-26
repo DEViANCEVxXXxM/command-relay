@@ -12,7 +12,7 @@ MAX_TAIL = 8192
 MAX_RUN_BYTES = 512000
 MAX_SCAN_BYTES = 4000000
 MAX_PACKET = 24000
-NAME = re.compile(r'report-\d{8}-\d{6}-\d{6}(?:\.partial)?\.txt\Z')
+NAME = re.compile(r'report-\d{8}-\d{6}-\d{6}(?:-[0-9a-f]{32})?(?:\.partial)?\.txt\Z')
 FOOTER = re.compile(r'^@step END\s*\nProcess exit code: ([^\r\n]+)\r?\nCancelled: (True|False)\r?\nFinished: ([^\r\n]+)\s*\Z', re.M)
 
 
@@ -24,6 +24,24 @@ def workspace_key(value):
     # Lexical identity only. No filesystem resolution of historical paths.
     if not isinstance(value, str) or not os.path.isabs(value): return None
     return os.path.normcase(os.path.normpath(value))
+
+
+def current_workspace_keys(workspace):
+    """Match the selected path and its canonical spelling, never resolve report paths.
+
+    Batch review records Path.resolve(), which can expand Windows short names
+    and aliases even when os.path.abspath() leaves them unchanged.
+    """
+    selected = pathlib.Path(os.path.abspath(workspace))
+    keys = {workspace_key(str(selected))}
+    try:
+        resolved = selected.resolve(strict=True)
+        if resolved.is_dir():
+            keys.add(workspace_key(str(resolved)))
+    except (OSError, RuntimeError, ValueError):
+        pass
+    keys.discard(None)
+    return keys
 
 
 def header_fields(text):
@@ -93,7 +111,7 @@ def handoff(rows):
 
 def session_packet(reports, workspace):
     """Reports are the persistent history; never include another workspace's run."""
-    root=pathlib.Path(reports); key=workspace_key(os.path.abspath(workspace))
+    root=pathlib.Path(reports); keys=current_workspace_keys(workspace)
     rows=[]; names=[]; directory_limited=False; unreadable=0; headers=0; scanned=0
     if root.exists():
         with os.scandir(root) as entries:
@@ -110,7 +128,7 @@ def session_packet(reports, workspace):
                 size=os.fstat(f.fileno()).st_size
                 head=f.read(MAX_HEADER).decode('utf-8','replace')
                 fields=header_fields(head)
-                if not key or workspace_key(fields.get('Working directory'))!=key:continue
+                if workspace_key(fields.get('Working directory')) not in keys:continue
                 f.seek(max(0,size-MAX_TAIL));tail=f.read(MAX_TAIL).decode('utf-8','replace')
                 row,used=summary(path,f,head,tail,size,MAX_SCAN_BYTES-scanned)
             scanned+=used;rows.append(row)

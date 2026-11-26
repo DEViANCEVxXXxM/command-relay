@@ -9,8 +9,8 @@ from PySide6.QtGui import QColor, QFont, QTextCursor, QTextDocument, QSyntaxHigh
 from PySide6.QtWidgets import (QApplication,QMainWindow,QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QLineEdit,QPlainTextEdit,QSplitter,QTabWidget,QListWidget,QFileDialog,QMessageBox,QCheckBox,QDialog,QTableWidget,QTableWidgetItem,QHeaderView,QAbstractItemView,QComboBox,QMenu,QInputDialog,QSizePolicy,QLayout,QStyle,QRadioButton,QButtonGroup,QGraphicsOpacityEffect)
 from .relay_core import (
     ASSETS, GIT_ACTIONS, MARK, PACKET_LIMIT, REPORTS, ROOT, SETTINGS,
-    atomic_text, compact_report, copy_mode, file_hash, git_args, load_input,
-    prepare, read_settings, sha,
+    atomic_text, compact_report, copy_mode, file_hash, git_args, load_input, load_batch,
+    prepare, read_settings, sha, BatchExecutionSession,
 )
 from .relay_version import VERSION
 from .relay_terms import dialog_result_text, casual_stage, casual_task_title, ai_rules_text
@@ -685,10 +685,201 @@ def choose_workspace_mode(current=None, parent=None, language='en', reduced_moti
     return next((mode for mode, radio in radios.items() if radio.isChecked()), None)
 
 
+class BatchReviewDialog(QDialog):
+    """Modal batch review and explicitly authorized execution."""
+    def __init__(self, plan, parent, initial_workspace):
+        super().__init__(parent)
+        self.plan = plan
+        self.ui = parent.ui
+        self.initial_workspace = initial_workspace
+        self.workspaces = {}
+        self.reviewed = ()
+        self.session = None
+        self.worker = None
+        self.snapshot = None
+        self.mailbox = queue.Queue(maxsize=1)
+        self.poll_timer = QTimer(self); self.poll_timer.setInterval(100)
+        self.poll_timer.timeout.connect(self.refresh_execution)
+        self.setObjectName('batchReviewDialog')
+        self.setWindowTitle(self.ui('batch_title'))
+        self.resize(900, 650)
+        layout = QVBoxLayout(self)
+        notice = QLabel(self.ui('batch_notice')); notice.setWordWrap(True); layout.addWidget(notice)
+        self.summary = QLabel(); self.summary.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.summary)
+        self.table = QTableWidget(len(plan.items), 4); self.table.setObjectName('batchTasks')
+        self.table.setAccessibleName(self.ui('batch_title'))
+        self.table.setHorizontalHeaderLabels([self.ui('history_task'), self.ui('batch_dependencies'), self.ui('batch_workspace'), self.ui('batch_state')])
+        self.table.verticalHeader().hide()
+        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.table.setColumnWidth(1, 155)
+        for row, item in enumerate(plan.items):
+            for col, value in enumerate((item.title or item.task_id, ', '.join(item.dependencies) or self.ui('batch_none'), self.ui('batch_unbound'), self.ui('batch_pending'))):
+                cell = QTableWidgetItem(value); cell.setToolTip(value); self.table.setItem(row, col, cell)
+        layout.addWidget(self.table, 1)
+        choices = QHBoxLayout()
+        self.choose = parent.btn(choices, self.ui('batch_choose'), self.choose_one); self.choose.setObjectName('batchChoose')
+        self.choose_all = parent.btn(choices, self.ui('batch_choose_all'), self.choose_every); self.choose_all.setObjectName('batchChooseAll')
+        choices.addStretch(); layout.addLayout(choices)
+        options = QHBoxLayout(); options.addWidget(QLabel(self.ui('batch_workers')))
+        self.workers = QComboBox(); self.workers.setAccessibleName(self.ui('batch_workers'))
+        for n in range(1, 5): self.workers.addItem(self.ui('batch_serial') if n == 1 else str(n), n)
+        options.addWidget(self.workers); options.addStretch(); layout.addLayout(options)
+        self.workers.currentIndexChanged.connect(lambda _: self.update_bindings())
+        tabs = QTabWidget()
+        self.script = QPlainTextEdit(); self.script.setObjectName('batchPrepared'); self.script.setReadOnly(True)
+        self.script.setProperty('role', 'code'); self.script.setAccessibleName(self.ui('batch_script'))
+        self.meta = QPlainTextEdit(); self.meta.setObjectName('batchMetadata'); self.meta.setReadOnly(True); self.meta.setAccessibleName(self.ui('batch_metadata'))
+        tabs.addTab(self.script, self.ui('batch_script')); tabs.addTab(self.meta, self.ui('batch_metadata')); layout.addWidget(tabs, 2)
+        self.status = QLabel(); self.status.setObjectName('batchStatus'); self.status.setTextFormat(Qt.TextFormat.PlainText); self.status.setWordWrap(True); layout.addWidget(self.status)
+        actions = QHBoxLayout(); actions.addStretch()
+        self.validate = parent.btn(actions, self.ui('batch_validate'), self.validate_paths); self.validate.setObjectName('batchValidate')
+        self.start_button = parent.btn(actions, self.ui('batch_start'), self.start_execution); self.start_button.setObjectName('batchStart'); self.start_button.setEnabled(False)
+        self.cancel_button = parent.btn(actions, self.ui('batch_cancel_task'), self.cancel_selected); self.cancel_button.setEnabled(False)
+        self.stop_button = parent.btn(actions, self.ui('batch_stop'), self.stop_batch); self.stop_button.setEnabled(False)
+        self.close_button = parent.btn(actions, self.ui('batch_close'), self.reject); self.close_button.setDefault(True)
+        layout.addLayout(actions)
+        self.table.currentCellChanged.connect(self.selection_changed)
+        self.table.selectRow(0); self.update_bindings(); self.selection_changed()
+
+    def selection_changed(self, *_):
+        row = self.table.currentRow(); self.choose.setEnabled(self.session is None and 0 <= row < len(self.plan.items))
+        if self.snapshot is not None and 0 <= row < len(self.plan.items):
+            state = self.snapshot['states'][self.plan.items[row].task_id]
+            self.cancel_button.setEnabled(state in ('pending', 'running', 'cancelling') and self.worker is not None and self.worker.is_alive())
+        if not 0 <= row < len(self.plan.items):
+            self.script.clear(); self.meta.clear(); return
+        item = self.plan.items[row]
+        prepared = item.prepared.decode('utf-8-sig')
+        self.script.setPlainText(prepared)
+        inspection = privacy.inspect_script(prepared)
+        self.meta.setPlainText('\n'.join((
+            self.plan.batch_id, item.task_id, item.title,
+            'SHA-256: ' + sha(item.prepared),
+            self.ui('batch_dependencies') + ': ' + (', '.join(item.dependencies) or self.ui('batch_none')),
+            self.ui('batch_hint') + ': ' + item.workspace_hint,
+            self.ui('batch_workspace') + ': ' + self.workspaces.get(item.task_id, self.ui('batch_unbound')),
+            self.ui('batch_inspector') + ': ' + json.dumps(inspection, ensure_ascii=False, indent=2),
+            json.dumps(json.loads(item.assertions_json), ensure_ascii=False, indent=2))))
+        if self.snapshot is not None:
+            receipt = self.snapshot['receipts'].get(item.task_id)
+            if receipt is not None:
+                self.meta.appendPlainText('\n' + self.ui('batch_state') + ': ' + self.ui('batch_' + receipt.state) + '\nAssertions: ' + receipt.assertions_status + '\n' + str(receipt.report_path or ''))
+            fault = self.snapshot['faults'].get(item.task_id)
+            if fault: self.meta.appendPlainText('\n' + fault)
+            prior = self.snapshot['review_faults'].get(item.task_id)
+            if prior: self.meta.appendPlainText('\n' + self.ui('batch_repeat_blocked') + '\n' + json.dumps(prior, ensure_ascii=False))
+
+    def update_bindings(self):
+        if self.session is not None: return
+        self.reviewed = (); self.start_button.setEnabled(False)
+        for row, item in enumerate(self.plan.items):
+            value = self.workspaces.get(item.task_id, self.ui('batch_unbound'))
+            cell = self.table.item(row, 2); cell.setText(value); cell.setToolTip(value)
+        self.summary.setText(self.plan.batch_id + ' · ' + self.ui('batch_summary').format(count=len(self.plan.items), bound=len(self.workspaces)))
+        self.validate.setEnabled(len(self.workspaces) == len(self.plan.items))
+        self.status.setText(self.ui('batch_invalidated') if self.workspaces else '')
+        self.selection_changed()
+
+    def choose_one(self):
+        if self.session is not None: return
+        row = self.table.currentRow()
+        if not 0 <= row < len(self.plan.items): return
+        item = self.plan.items[row]
+        path = QFileDialog.getExistingDirectory(self, self.ui('batch_choose'), self.workspaces.get(item.task_id, self.initial_workspace))
+        if path:
+            self.workspaces[item.task_id] = path; self.update_bindings()
+
+    def choose_every(self):
+        if self.session is not None: return
+        path = QFileDialog.getExistingDirectory(self, self.ui('batch_choose_all'), self.initial_workspace)
+        if path:
+            self.workspaces = {item.task_id: path for item in self.plan.items}; self.update_bindings()
+
+    def validate_paths(self):
+        if self.session is not None: return
+        self.reviewed = (); self.start_button.setEnabled(False)
+        workers = self.workers.currentData()
+        try:
+            _, self.reviewed = self.plan.review(dict(self.workspaces), workers=workers,
+                parallel_opt_in=workers > 1, isolated_ids=tuple(self.workspaces) if workers > 1 else ())
+        except (OSError, ValueError) as error:
+            self.status.setText(self.ui('batch_error') + ': ' + str(error)); return
+        self.status.setText(self.ui('batch_validated'))
+        self.start_button.setEnabled(True)
+
+    def start_execution(self):
+        if self.session is not None or not self.reviewed: return
+        workers = self.workers.currentData()
+        warning = self.ui('batch_confirm').format(count=len(self.reviewed), workers=workers)
+        if workers > 1: warning += '\n\n' + self.ui('batch_parallel_warning')
+        if QMessageBox.question(self, self.ui('batch_start'), warning, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            REPORTS.mkdir(exist_ok=True)
+            run = BatchExecutionSession(self.plan, dict(self.workspaces), self.reviewed, REPORTS, workers=workers)
+        except (OSError, ValueError) as error:
+            self.status.setText(self.ui('batch_error') + ': ' + str(error)); return
+        self.session = run
+        for control in (self.choose, self.choose_all, self.validate, self.workers, self.start_button, self.close_button): control.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.status.setText(self.ui('batch_running'))
+        def publish(snapshot):
+            try: self.mailbox.get_nowait()
+            except queue.Empty: pass
+            self.mailbox.put_nowait(snapshot)
+        def work():
+            try: run.run(publish)
+            except Exception as error:
+                # Do not make a crashed worker look safely settled.
+                publish({'worker_error': type(error).__name__ + ': ' + str(error)[:500]})
+        self.worker = threading.Thread(target=work, name='relay-batch-owner', daemon=True)
+        self.worker.start(); self.poll_timer.start()
+
+    def refresh_execution(self):
+        try: snap = self.mailbox.get_nowait()
+        except queue.Empty: snap = None
+        if snap is not None:
+            if 'worker_error' in snap:
+                self.status.setText(self.ui('batch_fault') + ': ' + snap['worker_error'])
+                self.stop_button.setEnabled(False); self.cancel_button.setEnabled(False); self.poll_timer.stop(); return
+            self.snapshot = snap
+            for row, item in enumerate(self.plan.items):
+                self.table.item(row, 3).setText(self.ui('batch_' + snap['states'][item.task_id]))
+            done = sum(state in ('succeeded','failed','unverified','cancelled','blocked') for state in snap['states'].values())
+            self.status.setText(self.ui('batch_progress').format(done=done, total=len(self.plan.items)) + (' · ' + self.ui('batch_halted') if snap['halted'] and not snap['finished'] else ''))
+            self.selection_changed()
+        if self.snapshot is not None and self.snapshot['finished'] and not self.worker.is_alive():
+            self.poll_timer.stop(); self.stop_button.setEnabled(False); self.cancel_button.setEnabled(False)
+            self.close_button.setEnabled(True); self.close_button.setDefault(True)
+            self.status.setText(self.ui('batch_finished'))
+
+    def cancel_selected(self):
+        row = self.table.currentRow()
+        if self.session is not None and 0 <= row < len(self.plan.items): self.session.cancel(self.plan.items[row].task_id)
+
+    def stop_batch(self):
+        if self.session is not None: self.session.stop()
+
+    def reject(self):
+        if self.session is not None and not (self.snapshot is not None and self.snapshot['finished'] and not self.worker.is_alive()):
+            self.status.setText(self.ui('batch_wait_stop')); return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.session is not None and not (self.snapshot is not None and self.snapshot['finished'] and not self.worker.is_alive()):
+            event.ignore(); self.status.setText(self.ui('batch_wait_stop')); return
+        super().closeEvent(event)
+
+
 class App(QMainWindow):
     def __init__(self):
         super().__init__();self.resize(1180,740);self.setMinimumSize(850,560)
         self.update_handoff = None
+        self.batch_active = False
         self.settings=read_settings();self.running=False;self.cancelled=False;self.proc=None;self.temp=None;self.journal=None;self.active=None;self.current=None;self.source='Untitled';self.source_hash=None;self.loaded=None;self.task={};self.pending=[];self.blank=False;self.started=0;self.stop_pending=False;self.stop_inflight=False
         self.signals=WorkerSignals();self.signals.hashDone.connect(self.hash_done);self.signals.stopDone.connect(self.stop_done);self.signals.initialTail.connect(self.finish_initial_tail);self.initial_restore_pending=True;self.tool_busy=False;self.task_queue=[];self.signals.toolDone.connect(self.tool_done);self.copy_busy=False;self.signals.copyDone.connect(self.copy_done);self.warm_path=None;self.warm_result=None;self.warm_waiting=False;self.signals.warmDone.connect(self.warm_done)
         self.ui_language=saved_language(self.settings) or 'en'
@@ -795,6 +986,8 @@ class App(QMainWindow):
         action(reports,self.ui('open_latest'),lambda:self.open_path(REPORTS/'latest.txt'))
         action(reports,self.ui('folder'),lambda:self.open_path(REPORTS))
         action(menu,self.ui('queue'),self.queue_dialog,True)
+        self.batch_action=action(menu,self.ui('batch_menu'),self.batch_dialog,True)
+        self.batch_action.setObjectName('batch_review')
         action(menu,self.ui('sha_file'),self.hash_tool,True)
         menu.addSeparator()
         # One settings entry for current preferences and future language/update tools.
@@ -1096,6 +1289,7 @@ class App(QMainWindow):
     def header(self,name,extra=''):
         return f'COMMAND RELAY REPORT\nStarted: {datetime.datetime.now().isoformat(timespec="seconds")}\nWorking directory: {self.cwd.text()}\nCommand file: {name}\n{extra}\n'
     def run(self):
+        if self.batch_active:return
         if self.running or self.stop_inflight:return
         if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
         raw=self.editor.toPlainText();cwd=self.cwd.text()
@@ -1127,17 +1321,19 @@ class App(QMainWindow):
             text=self.ui('repeat_report')+previous['report_file']+self.ui('repeat_verdict')+previous['verdict']
             if previous.get('process_exit') is not None:text+=self.ui('repeat_exit')+str(previous['process_exit'])
         else:text=self.ui('repeat_unknown')
-        if previous.get('reason'):text+='\n'+previous['reason']
-        text+=self.ui('repeat_warning')
+        if previous.get('reason_key'):text+='\n'+self.ui(previous['reason_key'])
+        elif previous.get('reason'):text+='\n'+previous['reason']
+        text+=self.ui('repeat_warning' if status=='matched' else 'repeat_unknown_warning')
         dialog=QMessageBox(QMessageBox.Icon.Warning,self.ui('repeat_title'),text,parent=self)
         dialog.setTextFormat(Qt.TextFormat.PlainText)
-        run=dialog.addButton(self.ui('repeat_run'),QMessageBox.ButtonRole.AcceptRole)
+        run=dialog.addButton(self.ui('repeat_run' if status=='matched' else 'repeat_proceed'),QMessageBox.ButtonRole.AcceptRole)
         cancel=dialog.addButton(QMessageBox.StandardButton.Cancel)
         cancel.setText(self.ui('confirm_cancel'))
         dialog.setDefaultButton(cancel);dialog.setEscapeButton(cancel)
         dialog.exec()
         return dialog.clickedButton() is run
     def run_git(self,action):
+        if self.batch_active:return
         if self.running or self.stop_inflight:return
         if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
         if not pathlib.Path(self.cwd.text()).is_dir():return self.error(self.ui('runtime_valid_workspace'))
@@ -1435,6 +1631,19 @@ class App(QMainWindow):
         row=QHBoxLayout();self.btn(row,'Add files…',add);self.btn(row,'Remove selected',remove);row.addStretch();self.btn(row,'Preview',d.accept);self.btn(row,'Cancel',d.reject);l.addLayout(row)
         if d.exec()==QDialog.DialogCode.Accepted and (paths or diff.isChecked()):
             selected=tuple(paths);include=diff.isChecked();self.start_tool('AI context',lambda:features.context_packet(cwd,selected,include))
+    def batch_dialog(self):
+        if self.batch_active or self.running or self.stop_inflight or self.tool_busy or self.copy_busy:
+            return self.error(self.ui('batch_busy'))
+        path,_ = QFileDialog.getOpenFileName(self, self.ui('batch_open'), '', 'JSON (*.json)')
+        if not path: return
+        try:
+            with pathlib.Path(path).open('rb') as stream:
+                plan = load_batch(stream.read(PACKET_LIMIT + 1))
+        except (OSError, ValueError, UnicodeError) as error:
+            return self.error(self.ui('batch_error') + ': ' + str(error))
+        self.batch_active = True
+        try: BatchReviewDialog(plan, self, self.cwd.text()).exec()
+        finally: self.batch_active = False
     def queue_dialog(self):
         if self.running:return
         d=QDialog(self);d.setWindowTitle(self.ui('result_queue'));d.resize(650,380);l=QVBoxLayout(d)
@@ -1644,6 +1853,7 @@ class App(QMainWindow):
         finally:
             closed=True;self.signals.historyDone.disconnect(loaded);filter_timer.stop()
     def closeEvent(self,event):
+        if self.batch_active:event.ignore();return
         if self.running or self.stop_inflight or self.tool_busy or self.copy_busy:self.error('Wait for local tools or stop the current run before closing');event.ignore();return
         try:atomic_text(SETTINGS,json.dumps({**self.settings,'workspace':self.cwd.text(),'library':str(self.lib),'wrap_output':self.wrap.isChecked(),'dense_output':self.dense.isChecked(),'mode':self.mode},ensure_ascii=False,indent=2))
         except OSError:pass

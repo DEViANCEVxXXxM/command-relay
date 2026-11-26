@@ -7,6 +7,8 @@ from .relay_session import NAME, header_fields, workspace_key
 
 MAX_ENTRIES = 10000
 MAX_HEADERS = 100
+# Pre-run identity review is separate from automatic result comparison.
+MAX_REPEAT_HEADERS = 3000
 MAX_HEADER_BYTES = 32768
 MAX_BASELINE_BYTES = 512000
 
@@ -98,7 +100,8 @@ def compare_previous(path, text, current):
 def previous_run(reports, header):
     """Find the newest identical archived task before Run; never authorize execution.
 
-    Search is bounded and uses the same lexical identity as result comparison.
+    Search is bounded separately from result comparison (up to 3000 headers)
+    and uses the same lexical identity. Only a matching report body is evaluated.
     A missing or unreadable history is not proof that a task has never run.
     """
     ident = identity(header)
@@ -110,30 +113,34 @@ def previous_run(reports, header):
         with os.scandir(root) as entries:
             for n, entry in enumerate(entries):
                 if n >= MAX_ENTRIES:
-                    return {'status': 'limited', 'reason': 'Archive directory limit reached.'}
+                    return {'status': 'limited', 'reason': 'Archive directory limit reached.', 'reason_key': 'repeat_directory_limit'}
                 if NAME.fullmatch(entry.name) and entry.is_file(follow_symlinks=False):
                     names.append(entry.name)
-        for name in sorted(names, reverse=True)[:MAX_HEADERS]:
+        for name in sorted(names, reverse=True)[:MAX_REPEAT_HEADERS]:
             path = root / name
             if path.is_symlink():
                 continue
             with path.open('rb') as stream:
                 head = stream.read(MAX_HEADER_BYTES)
-                if identity(head.decode('utf-8', 'replace')) != ident:
+                header_text = head.decode('utf-8', 'replace')
+                fields = header_fields(header_text)
+                if fields.get('Task ID') != ident[1]:
+                    continue
+                if identity(header_text) != ident:
                     continue
                 result = {'status': 'matched', 'report_file': name, 'verdict': 'NOT_EVALUATED'}
                 if '.partial.' in name:
                     return dict(result, verdict='INCOMPLETE')
                 size = os.fstat(stream.fileno()).st_size
                 if size > MAX_BASELINE_BYTES:
-                    return dict(result, reason='Matching report exceeds the scan limit.')
+                    return dict(result, reason='Matching report exceeds the scan limit.', reason_key='repeat_report_limit')
                 stream.seek(0)
                 data = stream.read(MAX_BASELINE_BYTES + 1)
             if len(data) != size or len(data) > MAX_BASELINE_BYTES or not data.startswith(head):
-                return dict(result, reason='Matching report changed while reading.')
+                return dict(result, reason='Matching report changed while reading.', reason_key='repeat_report_changed')
             text = data.decode('utf-8', 'replace')
             if identity(text) != ident:
-                return dict(result, reason='Matching report identity changed while reading.')
+                return dict(result, reason='Matching report identity changed while reading.', reason_key='repeat_identity_changed')
             packet = result_packet(text, name, full=True)
             if not packet['report_complete']:
                 return dict(result, verdict='INCOMPLETE')
@@ -141,12 +148,12 @@ def previous_run(reports, header):
                 return dict(result, verdict='CANCELLED')
             verdict = packet['assertions']['status']
             return dict(result, verdict=verdict, process_exit=packet['process_exit'])
-        if len(names) > MAX_HEADERS:
-            return {'status': 'limited', 'reason': 'Older archive headers were not checked.'}
-        return {'status': 'no_match', 'reason': 'No matching report in the checked history.'}
+        if len(names) > MAX_REPEAT_HEADERS:
+            return {'status': 'limited', 'reason': 'Older archive headers were not checked.', 'reason_key': 'repeat_header_limit'}
+        return {'status': 'no_match', 'reason': 'No matching report in the checked history.', 'reason_key': 'repeat_no_match'}
     except FileNotFoundError:
         if not root.exists():
-            return {'status': 'no_match', 'reason': 'No archive directory exists.'}
-        return {'status': 'unavailable', 'reason': 'An archive disappeared during the check.'}
+            return {'status': 'no_match', 'reason': 'No archive directory exists.', 'reason_key': 'repeat_no_archive'}
+        return {'status': 'unavailable', 'reason': 'An archive disappeared during the check.', 'reason_key': 'repeat_archive_disappeared'}
     except (OSError, ValueError, RecursionError, OverflowError, KeyError, TypeError):
-        return {'status': 'unavailable', 'reason': 'History could not be read or interpreted.'}
+        return {'status': 'unavailable', 'reason': 'History could not be read or interpreted.', 'reason_key': 'repeat_read_failed'}

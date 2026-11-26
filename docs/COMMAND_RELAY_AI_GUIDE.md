@@ -30,7 +30,7 @@ In the v4.4 development workbench, **More → Copy AI rules** copies only the co
 
 ### Efficient asynchronous execution
 
-When the installed version and tools support it, use bounded asynchronous execution or parallel processes for independent work instead of serializing everything unnecessarily. Within a reviewed task, independent subprocesses must have separate outputs and explicit native exit checks; join them, enforce deadlines, propagate cancellation and record per-child outcomes. Do not run competing writes to the same workspace, report, branch, installation, or policy. Keep dependent operations ordered and do not continue dependent work after failure. Avoid detached background jobs that outlive the reviewed task. Use the existing opt-in local parallel regression runner only where available and appropriate; its sequential default remains valid. The manual task queue is not automatic execution. Native dependency-aware scheduling is planned, not implemented at this checkpoint. Verify its eventual contract, permissions and cancellation semantics before recommending it. Never use parallel execution to evade user consent or repository protections.
+When the installed version and tools support it, use bounded asynchronous execution or parallel processes for independent work instead of serializing everything unnecessarily. Within a reviewed task, independent subprocesses must have separate outputs and explicit native exit checks; join them, enforce deadlines, propagate cancellation and record per-child outcomes. Do not run competing writes to the same workspace, report, branch, installation, or policy. Keep dependent operations ordered and do not continue dependent work after failure. Avoid detached background jobs that outlive the reviewed task. Use the existing opt-in local parallel regression runner only where available and appropriate; its sequential default remains valid. The manual task queue is not automatic execution. For builds with the Task batches execution interface verified and available, use command-relay/batch-v1 for independent reviewed tasks with explicit dependencies. Use task-v1 if the installed build does not support execution of batches. The user must explicitly select workspaces, review every task and approve execution; worker count is a local choice, not packet authority. Keep sequential execution for shared workspaces or conflicting effects. Never use parallel execution to evade user consent or repository protections.
 
 ## 2. Operating workflow
 
@@ -132,7 +132,10 @@ measurement or a task explicitly designed for that retry. For changed scripts,
 use a new ID or revision suffix. A read-only verification or repair task should
 have its own ID and refer to the prior report or resource identifiers. Do not
 rerun a mutating task merely to make its previous FAIL become PASS. The repeat
-confirmation available in 4.1 development uses bounded lexical history;
+confirmation uses bounded lexical history. The pre-run check in 4.4 development
+checks up to 3000 report headers (within the directory limit); automatic result
+comparison retains its separate 100-header limit. An incomplete scan is not a
+confirmed repeat, and still requires explicit user confirmation;
 absence of a match is not proof of a first run, and confirmation does not make
 an unsafe retry safe.
 
@@ -580,3 +583,46 @@ Casual shows a compact task title and the current Import / Review / Run / Result
 ### Editor responsiveness
 
 Command outline updates are coalesced after edits and deferred while the Steps sidebar is hidden. Stale outline navigation is disabled until rebuilt. File drag feedback is immediate and does not animate; only one local file is accepted, and drops are denied while the editor is read-only. Import still does not execute a task.
+
+### Internal execution dispatch (development only)
+
+The dependency scheduler now has an internal backend adapter. It freezes reviewed
+script bytes, workspace identity and assertions, checks authorization at each
+start, binds output to a unique attempt and requires backend-confirmed process
+and output settlement before releasing a worker. Reports are written to
+attempt-specific paths; unknown handles, stale callbacks, missing assertions,
+truncated output and ambiguous terminal markers cannot unlock dependants.
+A launcher error of unknown outcome retains the slot rather than retrying.
+The adapter is not a sandbox, and same-user commands are not isolated by this
+mechanism. The following sections describe the integrated Windows batch path. Verify that the installed build exposes execution before issuing batch-v1.
+
+
+### Internal batch preview (development only)
+
+`load_batch` validates a UTF-8 JSON envelope with exactly `schema`
+(`command-relay/batch-v1`), `batch_id`, and `tasks`. Each entry has a nested
+`task-v1` packet with an ID and assertions and a `depends_on` list of task IDs.
+The 1 MB / 50 task limits apply to the entire packet. Duplicate keys, missing
+or cyclic dependencies, unknown authority fields and unsupported packets are
+rejected. Preview is inert. Workspace hints are informational; the controller
+must explicitly bind each reviewed workspace. Workers default to one; parallel
+opt-in and isolation are trusted local review decisions, never packet fields.
+Same or nested reviewed roots cannot both be marked isolated. Distinct roots
+are not a sandbox or proof of isolation. Review still does not grant execution.
+The regular task-v1 importer rejects batch-v1; use More → Task batches.
+
+The internal Windows batch backend attaches a gated helper to a kill-on-close Windows Job Object before releasing the reviewed PowerShell script. The controller must wait for the entire job to become empty and the capture pipe to finish before completing a receipt. A failed attachment does not fall back to an uncontained process. This is lifecycle containment, not a security sandbox; the user must still review every operation. The batch execution interface uses this backend.
+
+The internal batch controller now combines reviewed plans, per-attempt dispatch and the Windows backend. Polling only collects completion evidence; it never admits work. A trusted caller must explicitly request admission and supply current per-task authorization. Denial or backend faults halt admission, while already started attempts can still settle; an unknown process handle is not proof of termination. Stop requests cancellation and does not declare completion before settlement. The GUI uses a dedicated owner thread for admission and settlement; there is no automatic retry.
+
+### Batch review and execution UI
+
+More → Task batches opens a dedicated batch review. It shows dependencies, exact prepared scripts, assertions, hashes and heuristic inspection. Choose workspaces locally (per task or one for all); packet hints never bind paths. Validate workspaces checks the graph and directory identities and freezes reviewed execution objects. Closing the preview changes neither the editor nor permissions. Run batch requires a separate default-deny confirmation of all reviewed commands and workspaces. The user chooses 1–4 workers; parallel execution requires distinct reviewed roots and explicit confirmation of independent effects. A repeat or incomplete archive check halts admission; review that individual task through normal Run. Stop batch stops admission and requests cancellation; Cancel selected targets a task. The dialog cannot close until settlement is confirmed. Inspect each task state and archived reports in History. No automatic retry or resume.
+
+### Batch archive integration (development)
+
+Settled attempts now publish individually to the same timestamp-ordered report archive, using a unique attempt suffix. History, session context and bounded repeat/comparison scans recognize the new names and retain compatibility with single-task names. Each report records the reviewed script hashes, task title, batch and attempt identities. Report publication never replaces an existing file; incomplete capture remains partial, and publication failure is unverified. A batch report is not proof of isolated effects. The GUI exposes the resulting state and archive path after settlement.
+
+### Native batch acceptance check
+
+On Windows, developers can explicitly run `python -B tools/smoke_qt.py --native-batch` in an isolated checkout. The optional check executes only disposable test scripts in temporary directories, uses the real batch dialog and Job Object backend, and checks concurrent admission, assertion failure with exit zero, dependency blocking, selected cancellation, stop, and attempt-owned archive receipts. The normal Qt smoke command remains non-executing. A successful native smoke does not establish sandboxing or validate arbitrary scripts.

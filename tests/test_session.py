@@ -23,6 +23,27 @@ class SessionTests(unittest.TestCase):
         self.assertEqual([r['task_id'] for r in self.packet()['runs']],['task-3','task-1'])
         r=self.packet()['runs'][1];self.assertEqual(r['assertions_status'],'PASS');self.assertEqual(r['intent']['purpose'],'Validate count');self.assertEqual(r['report_sha256_utf8'],result_packet(text,p.name)['report_sha256_utf8']);self.assertNotIn('PRIVATE_OTHER',json.dumps(self.packet()))
         self.assertNotIn('output',r);self.assertEqual(p.read_bytes(),text.encode())
+    def test_selected_workspace_canonical_spelling(self):
+        canonical = self.root/'canonical project'; canonical.mkdir()
+        self.add(1, workspace=canonical)
+        self.add(2, workspace=self.ws)
+        self.add(3, workspace=self.root/'unrelated')
+        original = pathlib.Path.resolve
+        def selected_only(path, *args, **kwargs):
+            if path == self.ws:
+                return canonical
+            self.fail('Historical workspace must not be resolved: '+str(path))
+        with patch.object(pathlib.Path, 'resolve', autospec=True, side_effect=selected_only):
+            rows = self.packet()['runs']
+        self.assertEqual([r['task_id'] for r in rows], ['task-2', 'task-1'])
+        self.assertEqual([r['assertions_status'] for r in rows], ['PASS', 'PASS'])
+        self.assertIs(pathlib.Path.resolve, original)
+
+    def test_canonical_resolution_failure_preserves_lexical_scope(self):
+        self.add(1); self.add(2, workspace=self.root/'unrelated')
+        with patch.object(pathlib.Path, 'resolve', side_effect=OSError('unavailable')):
+            self.assertEqual([r['task_id'] for r in self.packet()['runs']], ['task-1'])
+
     def test_statuses(self):
         self.add(1,body='COUNT=12');self.add(2,cancel=True);self.add(3,partial=True);self.add(4,checks=False);self.add(5,edited=True)
         rows=self.packet()['runs'];self.assertEqual([r['assertions_status'] for r in rows],['INCONCLUSIVE','NOT_REQUESTED','INCONCLUSIVE','INCONCLUSIVE','FAIL']);self.assertFalse(rows[2]['report_complete']);self.assertEqual(rows[0]['intent'],{})

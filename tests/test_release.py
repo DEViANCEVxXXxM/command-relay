@@ -47,8 +47,10 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:self.assertEqual(view.history_snapshot(pathlib.Path(d)/'missing'),([],0,False))
     def test_copy_in_progress_does_not_start_run(self):
         tree=ast.parse((pathlib.Path(__file__).resolve().parents[1]).joinpath('command_relay', 'relay_qt.py').read_text(encoding='utf-8'));cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='App');methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('run','run_git')];ns={};exec(compile(ast.Module(body=methods,type_ignores=[]),'relay_qt.py','exec'),ns)
-        obj=SimpleNamespace(running=False,stop_inflight=False,copy_busy=True,detail=Mock(),ui=lambda key:key)
+        obj=SimpleNamespace(batch_active=False,running=False,stop_inflight=False,copy_busy=True,detail=Mock(),ui=lambda key:key)
         ns['run'](obj);ns['run_git'](obj,'Git status');self.assertEqual(obj.detail.setText.call_count,2)
+        obj.batch_active=True;obj.copy_busy=False;obj.detail.reset_mock()
+        ns['run'](obj);ns['run_git'](obj,'Git status');obj.detail.setText.assert_not_called()
 
 class HistoryExperienceTests(unittest.TestCase):
     def test_history_page_searches_entire_snapshot(self):
