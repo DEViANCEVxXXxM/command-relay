@@ -6,9 +6,15 @@ Command Relay runs user-reviewed PowerShell commands with the user's privileges.
 
 ## Built-in automation permissions
 
-The built-in automatic squash merge helper requires an explicit saved opt-in for the resolved workspace and GitHub repository plus confirmation of the reviewed task. Missing, malformed or revoked grants deny the operation. Authorization is re-read before the merge request; GitHub protections remain authoritative. Manual reviewed operations and arbitrary scripts are outside this permission boundary. Signed update installation has a separate default-denied application-local grant and explicit terminal confirmation. Other unattended actions are not implemented.
+The built-in automatic squash merge helper requires an explicit saved opt-in for the resolved workspace and GitHub repository plus confirmation of the reviewed task. Missing, malformed or revoked grants deny the operation. Authorization is re-read before the merge request; GitHub protections remain authoritative. Manual reviewed operations and arbitrary scripts are outside this permission boundary. Signed update installation has a separate default-denied application-local grant and explicit terminal confirmation. No unrestricted unattended PowerShell is implemented.
 
-Use More > Settings > Safety settings to revoke grants and review the local bounded history. The history is not tamper-proof or a log of all operations. Keep `automation-permissions.json` private; do not commit it, share it, or copy grants to a new installation.
+In the 4.4 candidate use Settings > Safety settings (More > Settings in 4.3) to revoke grants and review the local bounded history. The history is not tamper-proof or a log of all operations. Keep `automation-permissions.json` private; do not commit it, share it, or copy grants to a new installation.
+
+## Upcoming 4.4 execution and browser boundaries
+
+Explicit ordinary Run authorizes the reviewed script. High-risk heuristic matches require a separate one-use approval tied to exact prepared commands and workspace; unknown/failed repeat outcomes require review. The absence of a match is not proof of safety. Batch execution requires review and explicit approval, and parallel workspaces must be distinct and non-overlapping. Job Objects and cancellation are not sandboxing or rollback. Fixed read-only local plans have bounded scope and cooperative cancellation, not protection from concurrent same-account changes.
+
+Personal Skills contain untrusted declarative data; they do not grant authority or execute on import. Optional off-record Browser Bridge validates same-origin task downloads, requires explicit import, and never runs commands or sends chat messages automatically. Inserting a reviewed masked draft shares text with the page before Send. External providers may be incompatible; prefer the clipboard fallback. Protected masking is best effort; Ctrl+click and RAW exports can disclose sensitive data. Preview translations are not independent legal or linguistic review; the original English notice accompanies translated preview notices.
 
 ## Release signing and update safety
 
@@ -26,4 +32,4 @@ Reports, settings, scripts, startup logs and evidence archives may contain sensi
 
 ## Supported versions
 
-The current development line is 4.3.x; consult published releases for the latest available package. No formal response-time or long-term support commitment has been established by the owner.
+The current integration candidate targets 4.4.0; the last published version is 4.3.0 at this checkpoint; consult published releases for the latest available package. No formal response-time or long-term support commitment has been established by the owner.

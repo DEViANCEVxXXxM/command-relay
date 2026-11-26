@@ -140,3 +140,19 @@ class PrivacyTests(unittest.TestCase):
     def test_inspector_bound(self):
         with patch('command_relay.relay_privacy.MAX_SCRIPT',1):
             self.assertTrue(inspect_script('abcdef')['scan_limited']);self.assertEqual(inspect_script('abcdef')['level'],'review')
+
+
+class SafetyInspectionTests(unittest.TestCase):
+    def test_extended_risk_and_no_disclosure(self):
+        from command_relay.relay_privacy import safety_inspect
+        for command in ('Restart-Computer', 'Remove-Partition', 'Set-Acl', 'reg.exe delete sample', 'Invoke-Command $x', 'shutil.rmtree(dummy)'):
+            result=safety_inspect(command+' # confidential-fixture')
+            self.assertEqual(result['level'],'high',command)
+            self.assertNotIn('confidential-fixture',json.dumps(result))
+        self.assertEqual(safety_inspect('Write-Output 1')['level'],'none')
+    def test_incomplete_scan_pauses(self):
+        from command_relay.relay_privacy import safety_inspect
+        with patch('command_relay.relay_privacy.MAX_SCRIPT',1):
+            result=safety_inspect('Write-Output 1')
+        self.assertEqual(result['level'],'high');self.assertTrue(result['scan_limited'])
+        self.assertIn('Incomplete safety inspection',[m['label'] for m in result['matches']])

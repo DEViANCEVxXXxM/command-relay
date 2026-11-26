@@ -475,6 +475,32 @@ class DispatchReview:
             raise ValueError('Reviewed workspace identity changed')
 
 
+class SafetyGate:
+    """One-run in-memory admission gate for arbitrary prepared scripts.
+
+    An approval must come from trusted UI code, never packet metadata. No
+    claim of confinement; a lexical scan may miss harmful behavior.
+    """
+    def __init__(self, approved=()):
+        self._approved = set(approved)
+        if any(type(r) is not DispatchReview for r in self._approved):
+            raise ValueError('Invalid safety approval')
+
+    @staticmethod
+    def inspect(review):
+        from .relay_privacy import safety_inspect
+        if type(review) is not DispatchReview: raise ValueError('Exact reviewed task required')
+        return safety_inspect(review.prepared.decode('utf-8-sig'))
+
+    def admit(self, review):
+        review.verify_workspace()
+        inspection = self.inspect(review)
+        if inspection['level'] != 'high': return True
+        if review not in self._approved: return False
+        self._approved.remove(review)
+        return True
+
+
 @dataclass(frozen=True)
 class BatchItem:
     task_id: str
@@ -837,7 +863,7 @@ class BatchExecutionSession:
     owner. The session rechecks exact review and repeat history at each admission.
     No authority is persisted or inferred from packet contents.
     """
-    def __init__(self, plan, workspaces, reviews, report_dir, *, workers=1, launch=None):
+    def __init__(self, plan, workspaces, reviews, report_dir, *, workers=1, launch=None, safety_approved=()):
         import queue, threading
         self._reviews = {r.task_id: r for r in reviews}
         isolated = tuple(self._reviews) if workers > 1 else ()
@@ -854,6 +880,10 @@ class BatchExecutionSession:
         self._cancelled_ids = set()
         self._started = False
         self._review_faults = {}
+        self._safety_faults = {}
+        safety_approved = tuple(safety_approved)
+        self._gate = SafetyGate(safety_approved)
+        if not set(safety_approved).issubset(set(fresh)): raise ValueError('Safety approval does not match reviewed batch')
 
     def stop(self):
         self._stop.set()
@@ -873,7 +903,11 @@ class BatchExecutionSession:
             self._review_faults[review.task_id] = previous
             return False
         with self._cancel_lock:
-            return not self._stop.is_set() and review.task_id not in self._cancelled_ids
+            if self._stop.is_set() or review.task_id in self._cancelled_ids: return False
+            if not self._gate.admit(review):
+                self._safety_faults[review.task_id] = self._gate.inspect(review)
+                return False
+            return True
 
     def run(self, publish):
         import queue, time
@@ -892,6 +926,7 @@ class BatchExecutionSession:
                 self._controller.start_ready(authorize=self._authorize)
             snap = self._controller.snapshot()
             snap['review_faults'] = dict(self._review_faults)
+            snap['safety_faults'] = dict(self._safety_faults)
             if snap != last:
                 publish(snap)
                 last = snap

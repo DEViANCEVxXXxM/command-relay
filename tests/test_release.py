@@ -47,9 +47,11 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:self.assertEqual(view.history_snapshot(pathlib.Path(d)/'missing'),([],0,False))
     def test_copy_in_progress_does_not_start_run(self):
         tree=ast.parse((pathlib.Path(__file__).resolve().parents[1]).joinpath('command_relay', 'relay_qt.py').read_text(encoding='utf-8'));cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='App');methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('run','run_git')];ns={};exec(compile(ast.Module(body=methods,type_ignores=[]),'relay_qt.py','exec'),ns)
-        obj=SimpleNamespace(batch_active=False,running=False,stop_inflight=False,copy_busy=True,detail=Mock(),ui=lambda key:key)
+        obj=SimpleNamespace(batch_active=False,running=False,stop_inflight=False,copy_busy=True,tool_busy=False,detail=Mock(),ui=lambda key:key)
         ns['run'](obj);ns['run_git'](obj,'Git status');self.assertEqual(obj.detail.setText.call_count,2)
-        obj.batch_active=True;obj.copy_busy=False;obj.detail.reset_mock()
+        obj.copy_busy=False;obj.tool_busy=True;obj.detail.reset_mock()
+        ns['run'](obj);ns['run_git'](obj,'Git status');self.assertEqual(obj.detail.setText.call_count,2)
+        obj.batch_active=True;obj.tool_busy=False;obj.detail.reset_mock()
         ns['run'](obj);ns['run_git'](obj,'Git status');obj.detail.setText.assert_not_called()
 
 class HistoryExperienceTests(unittest.TestCase):
@@ -88,5 +90,21 @@ class HistoryExperienceTests(unittest.TestCase):
             report('True');self.assertEqual(view.history_assertions(p),('PASS',2,2))
             with patch.object(view,'HISTORY_DETAIL_MAX_BYTES',16):self.assertEqual(view.history_assertions(p),('LIMITED',0,0))
 
+
+
+class WorkspacePresentationTests(unittest.TestCase):
+    def test_intent_is_untrusted_and_stale_after_edit(self):
+        packet={'purpose':'<b>read</b>','expected':'report'}
+        self.assertEqual(view.task_intent_preview(packet,True),('<b>read</b>','report'))
+        self.assertIsNone(view.task_intent_preview(packet,False))
+        self.assertIsNone(view.task_intent_preview({},True))
+    def test_input_routing_never_recognizes_results(self):
+        self.assertTrue(view.is_batch_packet(b'{"schema":"command-relay/batch-v1"}'))
+        self.assertFalse(view.is_batch_packet(b'{"schema":"command-relay/result-v1"}'))
+        self.assertFalse(view.is_batch_packet(b'Write-Output 1'))
+        self.assertFalse(view.is_batch_packet(b'{bad'))
+    def test_semantic_roles(self):
+        for line,role in [('CHECK=Unit tests | FAILURE','error'),('QT_SMOKE_PASS=True','success'),('CI_LOG | test ... FAIL','error'),('DeprecationWarning: old','warning'),('TASK_SECONDS=4','metric'),('@step 01','info'),('ordinary output',None),('LIMITATION=failed history remains protected','warning')]:
+            self.assertEqual(view.semantic_log_role(line),role)
 
 if __name__=='__main__':unittest.main()

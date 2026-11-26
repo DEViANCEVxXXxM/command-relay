@@ -82,27 +82,41 @@ class TermsTests(unittest.TestCase):
             tr('unknown_message', 'ru')
 
 
-class WorkspaceModeTests(unittest.TestCase):
-    def test_mode_preference_and_cancel(self):
-        from command_relay.relay_terms import saved_mode, startup_mode
-        for invalid in ({}, {'mode': []}, {'mode': 'unknown'}, {'mode': None}):
-            self.assertIsNone(saved_mode(invalid))
-            choose = Mock(return_value='casual')
-            self.assertEqual(startup_mode(invalid, choose), 'casual')
-            choose.assert_called_once_with()
-            self.assertIsNone(startup_mode(invalid, Mock(return_value=None)))
-        for mode in ('casual', 'advanced'):
-            choose = Mock()
-            self.assertEqual(startup_mode({'mode': mode}, choose), mode)
-            choose.assert_not_called()
+class WorkspaceSettingsTests(unittest.TestCase):
+    def test_migrate_legacy_modes(self):
+        from command_relay.relay_terms import workspace_settings
+        for mode in ('casual', 'advanced', None, []):
+            settings = {'mode':mode, 'show_sidebar_casual':False, 'language':'ru', 'theme':'light', 'show_sidebar':False}
+            self.assertEqual(workspace_settings(settings), {'language':'ru','theme':'light'})
+            self.assertIn('mode',settings)
+        self.assertEqual(workspace_settings({'mode':'casual','show_sidebar_casual':False,'show_sidebar':True}), {})
 
-    def test_sidebar_preferences_are_independent(self):
-        from command_relay.relay_terms import sidebar_preference
-        self.assertTrue(sidebar_preference({}, 'advanced'))
-        self.assertFalse(sidebar_preference({}, 'casual'))
-        settings = {'show_sidebar': False, 'show_sidebar_casual': True}
-        self.assertFalse(sidebar_preference(settings, 'advanced'))
-        self.assertTrue(sidebar_preference(settings, 'casual'))
+    def test_shared_safety_labels_preserve_high_risk_evidence(self):
+        from command_relay.relay_terms import safety_labels
+        matches = {'matches': [
+            {'level':'review','label':'File or repository changes','lines':[1]},
+            {'level':'high','label':'Destructive file or disk operation','lines':[3, 8]},
+            {'level':'high','label':'Incomplete safety inspection','lines':[]},
+        ]}
+        for language in ('en','ru'):
+            ui = lambda key: tr(key, language)
+            self.assertEqual(safety_labels(ui, matches),
+                ui('safety_reason_Destructive file or disk operation') + ': 3, 8\n' +
+                ui('safety_reason_Incomplete safety inspection'))
+            self.assertEqual(safety_labels(ui, {'matches':[]}), '')
+
+    def test_repeat_confirmation_preserves_uncertainty(self):
+        from command_relay.relay_terms import repeat_requires_confirmation as needs
+        for status in ('no_match','not_applicable'):
+            self.assertFalse(needs({'status':status}))
+        for verdict in ('PASS','NOT_REQUESTED'):
+            self.assertFalse(needs({'status':'matched','verdict':verdict,'process_exit':'0'}))
+        for verdict in ('FAIL','INCOMPLETE','CANCELLED','NOT_EVALUATED','INCONCLUSIVE'):
+            self.assertTrue(needs({'status':'matched','verdict':verdict,'process_exit':'0'}))
+        self.assertTrue(needs({'status':'matched','verdict':'PASS','process_exit':'1'}))
+        self.assertTrue(needs({'status':'matched','verdict':'PASS','process_exit':'0','reason':'changed'}))
+        for status in ('limited','unavailable','unexpected'):
+            self.assertTrue(needs({'status':status}))
 
 
 class ThemeTests(unittest.TestCase):
@@ -133,17 +147,31 @@ class ThemeTests(unittest.TestCase):
 
 
 class LocalizationArchitectureTests(unittest.TestCase):
-    def test_registry_does_not_enable_unreviewed_notices(self):
-        from command_relay.relay_terms import LOCALE_REGISTRY, LANGUAGES, locale_direction
+    def test_registry_preview_activation_with_full_notice(self):
+        from command_relay.relay_terms import LOCALE_REGISTRY, LANGUAGES, PREVIEW_LANGUAGES, locale_direction
         self.assertEqual(len(LOCALE_REGISTRY), 17)
-        self.assertEqual(set(LANGUAGES), {'en', 'ru'})
+        self.assertEqual(set(LANGUAGES), set(LOCALE_REGISTRY))
+        self.assertEqual(PREVIEW_LANGUAGES, set(LANGUAGES)-{'en','ru'})
         self.assertEqual(locale_direction('ar'), 'rtl')
         self.assertEqual(locale_direction('ru'), 'ltr')
         self.assertEqual(locale_direction([]), 'ltr')
-        for code in LOCALE_REGISTRY.keys() - LANGUAGES.keys():
-            self.assertIsNone(saved_language({'language': code}))
+        for code in PREVIEW_LANGUAGES:
+            self.assertEqual(saved_language({'language': code}), code)
+            notice = disclaimer_text(ROOT, code)
+            self.assertTrue(notice.endswith(disclaimer_text(ROOT,'en')))
+            self.assertIn('Apache License 2.0', notice)
+            persist = Mock()
+            self.assertIsNone(startup_language({}, Mock(return_value=code), Mock(return_value=False), persist))
+            persist.assert_not_called()
+            self.assertEqual(startup_language({}, Mock(return_value=code), Mock(return_value=True), persist), code)
+            persist.assert_called_once_with(code)
+
+    def test_preview_notice_refuses_changed_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            (root/'DISCLAIMER.md').write_text(disclaimer_text(ROOT).replace('provided as is','provided as available'), encoding='utf-8')
             with self.assertRaises(ValueError):
-                disclaimer_text(ROOT, code)
+                disclaimer_text(root,'de')
 
     def test_workbench_catalog_and_formatting(self):
         from string import Formatter
@@ -152,7 +180,7 @@ class LocalizationArchitectureTests(unittest.TestCase):
         for key, (en, ru) in _WORKBENCH.items():
             self.assertEqual(tr(key, 'en'), en)
             self.assertEqual(tr(key, 'ru'), ru)
-            self.assertEqual(tr(key, 'ar'), en)
+            self.assertEqual(tr(key, 'unknown-locale'), en)
             self.assertEqual({x[1] for x in Formatter().parse(en)},
                              {x[1] for x in Formatter().parse(ru)})
         self.assertIn('4.3.0', tr('window_title', 'ru').format(version='4.3.0'))
@@ -186,22 +214,6 @@ class DialogLocalizationTests(unittest.TestCase):
             self.assertEqual(dialog_result_text(message, 'ru'), message)
         self.assertNotEqual(tr('update_verified', 'ru'), tr('update_unverified', 'ru'))
         self.assertIn('НЕ проверена', tr('update_listed_signature', 'ru'))
-
-
-class CasualFlowTests(unittest.TestCase):
-    def test_stage_is_actual_state_not_claim_of_success(self):
-        from command_relay.relay_terms import casual_stage
-        for values, stage in (((False,False,False),'import'), ((True,False,False),'review'),
-                              ((True,True,False),'run'), ((False,True,True),'run'),
-                              ((True,False,True),'result')):
-            self.assertEqual(casual_stage(*values),stage)
-
-    def test_metadata_is_bounded_and_edits_not_mislabeled(self):
-        from command_relay.relay_terms import casual_task_title
-        self.assertEqual(casual_task_title({'title':'<b>Task</b>\nName'},'file',has_script=True,edited=False),'<b>Task</b> Name')
-        self.assertEqual(len(casual_task_title({'title':'x'*200},'file',has_script=True,edited=False)),100)
-        self.assertEqual(casual_task_title({'title':'old'},'file',has_script=True,edited=True,language='ru'),tr('casual_edited','ru'))
-        self.assertEqual(casual_task_title({},'file',has_script=False,edited=False),tr('casual_empty'))
 
 
 class GitHubDialogCatalogTests(unittest.TestCase):
@@ -297,3 +309,148 @@ class BatchCatalogTests(unittest.TestCase):
             self.assertEqual({f for _, f, _, _ in Formatter().parse(en) if f},
                              {f for _, f, _, _ in Formatter().parse(ru) if f})
         self.assertIn('No execution authorized', tr('batch_validated'))
+
+
+class CanonicalCopyTests(unittest.TestCase):
+    def test_all_message_placeholders_match(self):
+        from collections import Counter
+        from string import Formatter
+        from command_relay.relay_terms import _MESSAGES
+        for key, en in _MESSAGES['en'].items():
+            fields=lambda value: Counter(field for _,field,_,_ in Formatter().parse(value) if field is not None)
+            self.assertEqual(fields(en),fields(_MESSAGES['ru'][key]),key)
+
+    def test_review_and_verdict_language(self):
+        from command_relay.relay_terms import verdict_text
+        self.assertIn('не гарантия безопасности',tr('batch_inspector','ru'))
+        self.assertIn('not a safety guarantee',tr('batch_inspector'))
+        self.assertIn('Exit code 0 alone does not prove that tests passed.',tr('history_assert_note','en'))
+        self.assertIn('Код выхода 0 сам по себе не подтверждает успех проверок.',tr('history_assert_note','ru'))
+        self.assertNotEqual(verdict_text('PASS','ru'),verdict_text('FAIL','ru'))
+        self.assertEqual(verdict_text('NOT_REQUESTED','ru'),'Проверки не заданы')
+        self.assertEqual(verdict_text('UNKNOWN_RAW','ru'),'UNKNOWN_RAW')
+        self.assertIn('42',tr('nav_recent_exit','ru').format(code=42))
+
+
+class LegacyUICopyTests(unittest.TestCase):
+    def test_export_modes_and_unknown_raw(self):
+        from command_relay.relay_terms import export_mode_text
+        for mode in ('ai', 'detailed', 'compact', 'full'):
+            self.assertNotEqual(export_mode_text(mode,'ru'), export_mode_text(mode,'en'))
+        self.assertIn('без маскирования', export_mode_text('full','ru'))
+        self.assertIn('unmasked', export_mode_text('full','en'))
+        self.assertEqual(export_mode_text('future-mode','ru'),'future-mode')
+
+    def test_context_dialog_uses_catalog(self):
+        import ast
+        source=ast.parse((ROOT/'command_relay'/'relay_qt.py').read_text(encoding='utf-8'))
+        method=next(n for n in ast.walk(source) if isinstance(n,ast.FunctionDef) and n.name=='ai_context')
+        used={n.args[0].value for n in ast.walk(method) if isinstance(n,ast.Call) and isinstance(n.func,ast.Attribute) and n.func.attr=='ui' and n.args and isinstance(n.args[0],ast.Constant)}
+        self.assertTrue({'context_title','context_notice','context_diff','context_choose_files','context_add_files','context_remove','context_preview','context_result_title','mode_cancel'} <= used)
+        for node in ast.walk(method):
+            if isinstance(node,ast.Call) and ast.unparse(node.func).split('.')[-1] in {'QLabel','QCheckBox','setWindowTitle','getOpenFileNames','btn','start_tool'}:
+                self.assertFalse(any(isinstance(a,ast.Constant) and isinstance(a.value,str) and a.value.strip() for a in node.args),ast.unparse(node))
+
+
+class GlobalLocalizationDraftTests(unittest.TestCase):
+    def test_draft_coverage_and_bundled_preview(self):
+        from command_relay.relay_terms import (draft_catalogs, localization_draft_status,
+            LOCALE_REGISTRY, LANGUAGES, _MESSAGES)
+        drafts = draft_catalogs()
+        self.assertEqual(set(drafts), set(LOCALE_REGISTRY) - {'en','ru'})
+        self.assertEqual(len(drafts), 15)
+        for code, catalog in drafts.items():
+            status = localization_draft_status(code, catalog)
+            self.assertEqual(status['translated'], 528)
+            self.assertEqual(status['total'], len(_MESSAGES['en']))
+            self.assertEqual(status['translated'] + len(status['missing']), status['total'])
+            self.assertTrue(status['catalog_complete'])
+            self.assertFalse(status['notice_reviewed'])
+            self.assertFalse(status['editorial_reviewed'])
+            self.assertFalse(status['enabled'])
+            self.assertEqual(saved_language({'language': code}), code)
+            self.assertEqual(tr('shell_session', code), catalog['shell_session'])
+            self.assertEqual(_MESSAGES[code], catalog)
+        self.assertEqual(localization_draft_status('ar', drafts['ar'])['direction'], 'rtl')
+
+    def test_draft_validation_and_copy_isolation(self):
+        from command_relay.relay_terms import draft_catalogs, localization_draft_status
+        for catalog in ({'nav_recent_count':'Reports'}, {'nav_recent_count':'{wrong}'},
+                        {'nav_recent_count':'{count}{count}'}, {'nav_recent_count':'{count!r}'},
+                        {'unknown':'text'}, {'shell_session':'Unexpected\nline'}, {'shell_session':' '}, {'shell_session':None}):
+            with self.subTest(catalog=catalog), self.assertRaises(ValueError):
+                localization_draft_status('de', catalog)
+        with self.assertRaises(ValueError):
+            localization_draft_status('en', {})
+        drafts = draft_catalogs()
+        drafts['de']['shell_session'] = 'changed'
+        self.assertEqual(draft_catalogs()['de']['shell_session'], 'Sitzung')
+
+    def test_even_complete_catalog_is_not_authorized(self):
+        from command_relay.relay_terms import _MESSAGES, localization_draft_status
+        status = localization_draft_status('de', dict(_MESSAGES['en']))
+        self.assertTrue(status['catalog_complete'])
+        self.assertFalse(status['enabled'])
+        self.assertFalse(status['notice_reviewed'])
+        self.assertFalse(status['editorial_reviewed'])
+        self.assertEqual(saved_language({'language':'de'}), 'de')
+        self.assertNotEqual(tr('shell_session','de'), _MESSAGES['en']['shell_session'])
+
+    def test_expanded_safety_and_handoff_drafts(self):
+        from command_relay.relay_terms import draft_catalogs, _MESSAGES, localization_draft_status
+        keys = {'safety_gate_notice', 'safety_gate_once', 'batch_inspector',
+                'stop_confirm', 'history_assert_note', 'history_raw_question', 'bridge_draft_notice',
+                'plan_review', 'terms_agree', 'terms_decline'}
+        for code, catalog in draft_catalogs().items():
+            with self.subTest(code=code):
+                self.assertTrue(keys <= catalog.keys())
+                self.assertTrue(all(catalog[k] != _MESSAGES['en'][k] for k in keys))
+                self.assertIn('example.org', catalog['bridge_draft_notice'].format(host='example.org', report='example.txt'))
+                self.assertFalse(localization_draft_status(code, catalog)['enabled'])
+
+
+    def test_extended_history_batch_and_skill_drafts(self):
+        from command_relay.relay_terms import draft_catalogs, _MESSAGES, localization_draft_status
+        keys = set('history_detail history_assert_note history_page_count batch_notice batch_confirm batch_parallel_warning batch_fault skills_notice skills_load_confirm skills_import_confirm bridge_copy_identity bridge_copy_notice bridge_download_denied plan_input context_notice close_busy'.split())
+        for code, catalog in draft_catalogs().items():
+            with self.subTest(code=code):
+                self.assertTrue(keys <= catalog.keys())
+                self.assertTrue(all(catalog[k] != _MESSAGES['en'][k] for k in keys))
+                self.assertEqual(catalog['history_detail'].count('\n'), 3)
+                self.assertEqual(catalog['bridge_copy_identity'].count('\n'), 2)
+                self.assertNotIn(r'\n', catalog['history_detail'])
+                self.assertIn('TEST-REPORT', catalog['bridge_copy_identity'].format(report='TEST-REPORT', workspace='TEST-WORKSPACE', host='example.org'))
+                self.assertFalse(localization_draft_status(code, catalog)['enabled'])
+
+
+    def test_legacy_tools_update_and_repeat_drafts(self):
+        from command_relay.relay_terms import draft_catalogs, _MESSAGES, localization_draft_status
+        keys = set('editor_placeholder terminal_accessible update_downloading update_missing_signature update_listed_signature repeat_unknown repeat_report_changed safety_saved safety_update_saved gh_confirm_title gh_readiness_yes result_filter_4 result_count'.split())
+        for code, catalog in draft_catalogs().items():
+            with self.subTest(code=code):
+                self.assertTrue(keys <= catalog.keys())
+                self.assertTrue(all(catalog[k] != _MESSAGES['en'][k] for k in keys))
+                self.assertIn('42', catalog['result_count'].format(count=42))
+                self.assertFalse(localization_draft_status(code, catalog)['enabled'])
+
+    def test_retired_workspace_keys_removed(self):
+        from command_relay.relay_terms import _MESSAGES, draft_catalogs
+        retired = ['casual_accessible', 'casual_edited', 'casual_empty', 'casual_flow', 'casual_import', 'casual_import_help', 'casual_result', 'casual_result_help', 'casual_review', 'casual_review_help', 'casual_run', 'casual_running_help', 'casual_stage_accessible', 'casual_title_accessible', 'casual_untitled', 'mode_advanced', 'mode_advanced_desc', 'mode_casual', 'mode_casual_desc', 'mode_continue', 'mode_heading', 'mode_safety', 'mode_settings', 'mode_title', 'nav_code', 'nav_intent', 'nav_no_intent', 'nav_output', 'nav_review_notice', 'nav_review_run', 'nav_risk_high', 'nav_risk_none', 'nav_risk_pending', 'nav_risk_review', 'nav_session', 'review_risk_end', 'review_risk_intro']
+        for catalog in (*_MESSAGES.values(), *draft_catalogs().values()):
+            self.assertTrue(set(retired).isdisjoint(catalog))
+            self.assertIn('mode_cancel', catalog)
+            self.assertIn('safety_gate_notice', catalog)
+
+    def test_complete_drafts_preserve_notice_boundaries(self):
+        from command_relay.relay_terms import _MESSAGES, draft_catalogs, localization_draft_status
+        keys = ('copy_tip', 'merge_allow', 'merge_revoke', 'install_allow', 'install_revoke',
+                'gh_confirm_body', 'repeat_warning', 'repeat_unknown_warning')
+        for code, catalog in draft_catalogs().items():
+            self.assertEqual(set(catalog), set(_MESSAGES['en']))
+            self.assertTrue(localization_draft_status(code, catalog)['catalog_complete'])
+            for key in keys:
+                self.assertEqual(catalog[key].count('\n'), _MESSAGES['en'][key].count('\n'))
+                self.assertNotEqual(catalog[key], _MESSAGES['en'][key])
+            for key in ('merge_allow', 'merge_revoke'):
+                text = catalog[key].format(workspace='TEST-WORKSPACE', repository='TEST-REPO')
+                self.assertIn('TEST-WORKSPACE\nTEST-REPO', text)

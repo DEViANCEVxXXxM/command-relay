@@ -68,6 +68,24 @@ class ExportTests(unittest.TestCase):
     def test_modes(self):
         p=self.report(body='PASSWORD=fictional-example-secret\nCOUNT=15');raw=p.read_bytes().decode()
         self.assertEqual(ex.build_copy(p,'full')[1],raw);self.assertNotIn('fictional-example-secret',ex.build_copy(p,'compact')[1]);self.assertIsNotNone(ex.build_copy(p,'invalid')[2])
+    def test_smart_verbose_success_and_detailed(self):
+        body='\n'.join(f'test_case_{i} (tests.test_example.Suite) ... ok' for i in range(430))
+        p=self.report(body=body+'\nCOUNT=15\nERROR: retained context\nPASSWORD=fictional-example-secret')
+        original=p.read_bytes()
+        smart=json.loads(ex.build_copy(p,'ai')[1]); detailed=json.loads(ex.build_copy(p,'detailed')[1])
+        self.assertEqual(smart['view'],'smart_extract');self.assertEqual(smart['omitted_lines'],428)
+        self.assertEqual(smart['assertions'],detailed['assertions']);self.assertEqual(smart['report_sha256_utf8'],detailed['report_sha256_utf8'])
+        self.assertIn('ERROR: retained context',smart['output']);self.assertIn('COUNT=15',smart['output'])
+        self.assertNotIn('fictional-example-secret',json.dumps(smart));self.assertEqual(p.read_bytes(),original)
+        self.assertLess(len(json.dumps(smart)),len(json.dumps(detailed))/2)
+        self.assertEqual(smart['recovery']['automatic_retry'],False)
+    def test_smart_does_not_fold_failure_or_metrics(self):
+        lines='\n'.join(['test_a (tests.A) ... ok']*5+['test_b (tests.A) ... FAIL','COUNT=15','COUNT=15','Traceback (most recent call last):'])
+        out,omitted=ex.smart_output(lines);self.assertEqual(omitted,3);self.assertIn('... FAIL',out);self.assertEqual(out.count('COUNT=15'),2);self.assertIn('Traceback',out)
+        self.assertIsNone(ex.smart_output(lines,1))
+    def test_recovery_partial_and_failed(self):
+        p=self.report();p.write_bytes(p.read_bytes().split(b'@step END')[0]);packet=json.loads(ex.build_copy(p,'ai')[1]);self.assertEqual(packet['recovery']['next_action'],'inspect_partial_effects')
+        p=self.report(body='COUNT=14');packet=json.loads(ex.build_copy(p,'ai')[1]);self.assertEqual(packet['recovery']['next_action'],'inspect_failure_and_existing_effects')
     def test_mask_failure_never_raw(self):
         p=self.report(body='PASSWORD=fictional-example-secret')
         with patch.object(ex,'protect_packet',side_effect=ValueError):
@@ -81,9 +99,9 @@ class WorkflowTests(unittest.TestCase):
         cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='App')
         names={'warm_done','copy_report'}
         code=ast.Module(body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[])
-        ns={};exec(compile(code,'relay_qt.py','exec'),ns)
-        from command_relay.relay_terms import tr
-        self.app=SimpleNamespace(ui=lambda key: tr(key, 'ru'),current=pathlib.Path('report.txt'),running=False,copy_busy=False,warm_path=None,warm_result=None,warm_waiting=False,detail=Mock(),error=Mock(),copy_done=Mock(),start_copy_worker=Mock())
+        from command_relay.relay_terms import tr, export_mode_text
+        ns={'export_mode_text':export_mode_text};exec(compile(code,'relay_qt.py','exec'),ns)
+        self.app=SimpleNamespace(ui_language='ru',ui=lambda key: tr(key, 'ru'),current=pathlib.Path('report.txt'),running=False,copy_busy=False,warm_path=None,warm_result=None,warm_waiting=False,detail=Mock(),error=Mock(),copy_done=Mock(),start_copy_worker=Mock())
         self.click=lambda mode='ai':ns['copy_report'](self.app,mode)
         self.done=lambda prepared,path=None:ns['warm_done'](self.app,path or self.app.current,prepared)
         self.prepared=SimpleNamespace(path=self.app.current,fresh=Mock(return_value=True),info=('ai','report.txt','PASS',0),text='protected')
@@ -97,6 +115,10 @@ class WorkflowTests(unittest.TestCase):
         self.app.warm_result=self.prepared;self.prepared.fresh.return_value=False;self.click();self.app.start_copy_worker.assert_called_once_with(self.app.current,'ai');self.app.copy_done.assert_not_called()
     def test_raw_copy_does_not_use_ai_cache(self):
         self.app.warm_result=self.prepared;self.click('full');self.app.start_copy_worker.assert_called_once_with(self.app.current,'full')
+    def test_detailed_copy_does_not_use_smart_cache(self):
+        self.app.warm_result=self.prepared;self.app.warm_path=self.app.current
+        self.click('detailed');self.app.start_copy_worker.assert_called_once_with(self.app.current,'detailed')
+        self.app.copy_done.assert_not_called();self.assertFalse(self.app.warm_waiting)
     def test_old_worker_does_not_replace_new_result(self):
         old=self.app.current;self.app.warm_path=old;self.app.current=pathlib.Path('new.txt');self.app.running=True
         self.done(self.prepared,old);self.assertIsNone(self.app.warm_result);self.assertIsNone(self.app.warm_path);self.app.copy_done.assert_not_called()
