@@ -12,7 +12,7 @@ MAX_TAIL = 8192
 MAX_RUN_BYTES = 512000
 MAX_SCAN_BYTES = 4000000
 MAX_PACKET = 24000
-NAME = re.compile(r'report-\d{8}-\d{6}-\d{6}(?:\.partial)?\.txt\Z')
+NAME = re.compile(r'report-\d{8}-\d{6}-\d{6}(?:-[0-9a-f]{32})?(?:\.partial)?\.txt\Z')
 FOOTER = re.compile(r'^@step END\s*\nProcess exit code: ([^\r\n]+)\r?\nCancelled: (True|False)\r?\nFinished: ([^\r\n]+)\s*\Z', re.M)
 
 

@@ -285,3 +285,15 @@ class AIRulesTests(unittest.TestCase):
                 with self.assertRaises(ValueError):ai_rules_text(root)
             guide.write_bytes(b'\xff')
             with self.assertRaises(UnicodeError):ai_rules_text(root)
+
+
+class BatchCatalogTests(unittest.TestCase):
+    def test_batch_review_catalog(self):
+        from command_relay.relay_terms import _BATCH_MESSAGES, tr
+        from string import Formatter
+        for key, (en, ru) in _BATCH_MESSAGES.items():
+            self.assertEqual(tr(key, 'en'), en)
+            self.assertEqual(tr(key, 'ru'), ru)
+            self.assertEqual({f for _, f, _, _ in Formatter().parse(en) if f},
+                             {f for _, f, _, _ in Formatter().parse(ru) if f})
+        self.assertIn('No execution authorized', tr('batch_validated'))

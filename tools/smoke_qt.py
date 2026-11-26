@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Non-executing Qt smoke check, intended for an isolated CI checkout."""
+"""Qt smoke check; real Windows batch tests only with --native-batch."""
 import os
 import json
 import tempfile
@@ -25,6 +25,96 @@ def settle_layout():
     for _ in range(4):
         QCoreApplication.sendPostedEvents(None, QEvent.Type.LayoutRequest.value)
         app.processEvents()
+
+
+def native_batch_smoke(parent):
+    """Explicit opt-in GUI-to-Job-Object test in disposable Windows directories."""
+    import time
+    from command_relay import relay_core as core, relay_view as view
+    assert sys.platform == 'win32', 'Native batch smoke requires Windows'
+    with tempfile.TemporaryDirectory(prefix='relay-native-batch-') as td:
+        folder = Path(td)
+        def run_case(case, specs, expected, cancelled=False):
+            base = folder / case; base.mkdir()
+            reports = base / 'reports'
+            roots = {}; entries = []
+            for key, deps, script in specs:
+                workspace = base / key; workspace.mkdir(); roots[key] = str(workspace)
+                entries.append({'task': {'schema':'command-relay/task-v1', 'task_id':key,
+                    'title':'Native '+key, 'script':script, 'assertions':{'exit_code':0,
+                    'metrics':[{'key':'RESULT','equals':True,'occurrence':'all'}]}}, 'depends_on':deps})
+            plan = core.load_batch(json.dumps({'schema':'command-relay/batch-v1','batch_id':case,'tasks':entries}).encode())
+            dialog = relay_qt.BatchReviewDialog(plan,parent,td)
+            dialog.show(); dialog.workspaces = roots; dialog.update_bindings()
+            dialog.workers.setCurrentIndex(1); dialog.validate_paths()
+            assert dialog.start_button.isEnabled(), dialog.status.text()
+            def wait_for(predicate, seconds=20):
+                deadline = time.monotonic()+seconds
+                while time.monotonic()<deadline:
+                    app.processEvents(); dialog.refresh_execution()
+                    if predicate(): return
+                    time.sleep(.02)
+                raise AssertionError((case, dialog.status.text(), dialog.snapshot))
+            def states(): return (dialog.snapshot or {}).get('states', {})
+            with patch.object(relay_qt,'REPORTS',reports):
+                try:
+                    with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No):
+                        dialog.start_button.click()
+                    assert dialog.session is None and not reports.exists()
+                    with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes) as confirm:
+                        dialog.start_button.click()
+                    assert confirm.call_args.args[-1] == QMessageBox.StandardButton.No
+                    assert dialog.session is not None and not dialog.close_button.isEnabled()
+                    dialog.reject(); assert not dialog.close_button.isEnabled()
+                    wait_for(lambda: states().get('a') == states().get('b') == 'running')
+                    assert states().get('c') == 'pending'
+                    if cancelled:
+                        dialog.table.selectRow(0); assert dialog.cancel_button.isEnabled()
+                        dialog.cancel_button.click()
+                        wait_for(lambda: states().get('a') == 'cancelled')
+                        assert states().get('b') == 'running'
+                        assert states().get('c') == 'blocked'
+                        dialog.stop_button.click()
+                    wait_for(lambda: dialog.close_button.isEnabled(), 30)
+                    assert states() == expected, dialog.snapshot
+                    assert dialog.snapshot['finished'] and not dialog.worker.is_alive()
+                    receipts = dialog.snapshot['receipts']
+                    assert set(receipts) == {k for k,v in expected.items() if v != 'blocked'}
+                    assert len(list(reports.glob('report-*.txt'))) == len(receipts)
+                    assert len({r.attempt.token for r in receipts.values()}) == len(receipts)
+                    for key, receipt in receipts.items():
+                        assert receipt.state == expected[key] and receipt.report_path.parent == reports.resolve()
+                        raw = receipt.report_path.read_bytes(); text = raw.decode('utf-8')
+                        assert core.sha(raw) == receipt.report_sha256
+                        fields = core.report_header_fields(text)
+                        assert fields['Task ID'] == key and fields['Attempt ID'] == receipt.attempt.token
+                        assert Path(fields['Working directory']).resolve() == Path(roots[key]).resolve()
+                        if not cancelled:
+                            assert receipt.exit_code == 0
+                            assert view.history_assertions(receipt.report_path)[0] == ('FAIL' if key=='b' else 'PASS')
+                            assert 'NATIVE_'+key.upper() in text
+                        else:
+                            assert 'Cancelled: True' in text
+                    if expected['c'] == 'blocked':
+                        assert not any('NATIVE_C' in p.read_text(encoding='utf-8') for p in reports.glob('report-*.txt'))
+                finally:
+                    if dialog.worker is not None and dialog.worker.is_alive():
+                        dialog.stop_batch(); dialog.worker.join(timeout=12)
+                    dialog.refresh_execution()
+                    if dialog.worker is None or not dialog.worker.is_alive():
+                        dialog.poll_timer.stop(); dialog.hide(); dialog.deleteLater(); app.processEvents()
+        run_case('native-success-failure', [
+            ('a', [], 'Start-Sleep -Seconds 2\nWrite-Output "NATIVE_A"\nWrite-Output "RESULT=True"\nexit 0'),
+            ('b', [], 'Start-Sleep -Seconds 2\nWrite-Output "NATIVE_B"\nWrite-Output "RESULT=False"\nexit 0'),
+            ('c', ['b'], 'Write-Output "NATIVE_C"\nWrite-Output "RESULT=True"\nexit 0'),
+            ('d', ['a'], 'Write-Output "NATIVE_D"\nWrite-Output "RESULT=True"\nexit 0'),
+        ], {'a':'succeeded','b':'failed','c':'blocked','d':'succeeded'})
+        run_case('native-cancel', [
+            ('a', [], 'Start-Sleep -Seconds 40\nWrite-Output "RESULT=True"\nexit 0'),
+            ('b', [], 'Start-Sleep -Seconds 40\nWrite-Output "RESULT=True"\nexit 0'),
+            ('c', ['a'], 'Write-Output "NATIVE_C"\nWrite-Output "RESULT=True"\nexit 0'),
+        ], {'a':'cancelled','b':'cancelled','c':'blocked'}, cancelled=True)
+    print('NATIVE_BATCH_GUI_PASS=True', flush=True)
 
 
 # Exercise the real modal dialog without opening a workspace or running commands.
@@ -109,6 +199,76 @@ for mode in ('casual', 'advanced'):
             localized.apply_mode('advanced' if mode == 'casual' else 'casual')
             assert localized.editor.toPlainText() == raw and localized.output.toPlainText() == raw
             start.assert_not_called()
+        # Batch review is inert in both modes, binds only explicitly selected paths.
+        from command_relay.relay_core import load_batch
+        with tempfile.TemporaryDirectory() as td:
+            from PySide6.QtWidgets import QTableWidget
+            packet = {'schema':'command-relay/batch-v1','batch_id':'smoke-batch','tasks':[
+                {'task':{'schema':'command-relay/task-v1','task_id':key,'title':'Task '+key,
+                         'script':'Write-Output "RESULT=True"','workspace_hint':'untrusted-path',
+                         'assertions':{'exit_code':0}},'depends_on':deps}
+                for key,deps in [('a',[]),('b',['a'])]]}
+            path=Path(td)/'batch.json'; path.write_text(json.dumps(packet),encoding='utf-8')
+            old_editor=localized.editor.toPlainText(); old_workspace=localized.cwd.text(); errors=[]
+            def inspect_batch():
+                dialog=QApplication.activeModalWidget()
+                try:
+                    assert dialog.objectName()=='batchReviewDialog'
+                    assert dialog.table.rowCount()==2 and not dialog.validate.isEnabled()
+                    assert dialog.script.isReadOnly() and dialog.meta.isReadOnly()
+                    dialog.table.selectRow(1); assert dialog.table.item(1,1).text()=='a'
+                    assert 'untrusted-path' in dialog.meta.toPlainText() and dialog.workspaces=={}
+                    with patch.object(QFileDialog,'getExistingDirectory',return_value=td): dialog.choose_every()
+                    assert dialog.validate.isEnabled() and set(dialog.workspaces)=={'a','b'}
+                    dialog.validate_paths(); assert dialog.status.text()==tr('batch_validated','ru')
+                    with patch.object(QFileDialog,'getExistingDirectory',return_value=''): dialog.choose_one()
+                    assert dialog.status.text()==tr('batch_validated','ru')
+                    with patch.object(QFileDialog,'getExistingDirectory',return_value=str(Path(td)/'missing')): dialog.choose_one()
+                    assert dialog.status.text()==tr('batch_invalidated','ru')
+                    dialog.validate_paths(); assert dialog.status.text().startswith(tr('batch_error','ru'))
+                except Exception as exc: errors.append(exc)
+                finally:
+                    if dialog is not None: dialog.reject()
+            with patch.object(QFileDialog,'getOpenFileName',return_value=(str(path),'')), patch.object(localized,'start_process') as start, patch('command_relay.relay_windows.WindowsPowerShellRun') as backend:
+                QTimer.singleShot(0,inspect_batch);localized.batch_dialog()
+                assert not errors,errors;start.assert_not_called();backend.assert_not_called()
+            assert localized.editor.toPlainText()==old_editor and localized.cwd.text()==old_workspace
+        # Execute the UI path using a trusted fake backend, never a real command.
+        import time
+        with tempfile.TemporaryDirectory() as td:
+            reports=Path(td)/'reports'; reports.mkdir()
+            plan=load_batch(json.dumps(packet).encode())
+            dialog=relay_qt.BatchReviewDialog(plan,localized,td)
+            dialog.workspaces={item.task_id:td for item in plan.items};dialog.update_bindings()
+            dialog.workers.setCurrentIndex(1);dialog.validate_paths()
+            assert not dialog.start_button.isEnabled() # overlapping roots
+            dialog.workers.setCurrentIndex(0);dialog.validate_paths();assert dialog.start_button.isEnabled()
+            launches=[]
+            class Backend:
+                def __init__(self,attempt,review,emit):
+                    launches.append(attempt.task_id);self.attempt=attempt;self.emit=emit
+                    emit(b'RESULT=True\n')
+                def poll(self):return 0
+                def settled(self,attempt,handle):return attempt==self.attempt and handle is self
+                def cancel(self,attempt,handle):pass
+            with patch.object(relay_qt,'REPORTS',reports), patch('command_relay.relay_windows.WindowsPowerShellRun',Backend):
+                with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No):dialog.start_execution()
+                assert dialog.session is None and not launches
+                with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.Yes):dialog.start_execution()
+                assert dialog.session is not None and not dialog.close_button.isEnabled()
+                dialog.reject();assert not dialog.close_button.isEnabled()
+                deadline=time.monotonic()+8
+                while not dialog.close_button.isEnabled() and time.monotonic()<deadline:
+                    app.processEvents();dialog.refresh_execution();time.sleep(.01)
+                assert dialog.close_button.isEnabled(),dialog.status.text()
+                assert launches==['a','b'] and dialog.snapshot['finished']
+                assert len(list(reports.glob('report-*.txt')))==2
+                assert dialog.table.item(1,3).text()==tr('batch_succeeded','ru')
+                dialog.reject()
+            assert localized.editor.toPlainText()==old_editor and localized.cwd.text()==old_workspace
+        print('Qt batch execution UI checks passed (default deny, overlapping roots, mock dispatch, archive, close guard).')
+        if mode == 'advanced' and '--native-batch' in sys.argv:
+            native_batch_smoke(localized)
         # Runtime presentation is localized, but the actual report stays unchanged.
         localized.import_data(b'Write-Output "READY"', 'raw.ps1')
         assert localized.detail.text() == tr('runtime_loaded', 'ru')+'raw.ps1'
@@ -541,6 +701,29 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
                 assert start.call_count == expected_calls
             finally:
                 window.cleanup_temp()
+    # Unknown history is not a confirmed repeat; localize the reason and keep Cancel default.
+    old_language=window.ui_language
+    window.ui_language='ru'
+    try:
+        errors=[]
+        def interact_limited():
+            dialog=QApplication.activeModalWidget()
+            try:
+                assert isinstance(dialog,QMessageBox)
+                assert 'пределами лимита' in dialog.text()
+                assert 'не установлено' in dialog.text()
+                assert 'Older archive' not in dialog.text()
+                assert any(b.text()=='Продолжить запуск' for b in dialog.buttons())
+                assert dialog.defaultButton() is dialog.button(QMessageBox.StandardButton.Cancel)
+                dialog.defaultButton().click()
+            except Exception as exc:
+                errors.append(exc)
+                if dialog is not None:dialog.reject()
+        QTimer.singleShot(0,interact_limited)
+        assert not window.confirm_repeat({'status':'limited','reason':'Older archive headers were not checked.', 'reason_key':'repeat_header_limit'})
+        assert not errors, errors
+    finally:
+        window.ui_language=old_language
     print('Qt repeated-task confirmation checks passed (cancel and explicit rerun; no commands executed).')
     # Session review uses the selected workspace, never executes a task or auto-copies.
     with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
@@ -708,4 +891,4 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     window.hide()
     window.deleteLater()
     app.processEvents()
-print('Qt startup smoke check passed (no commands executed).')
+print('Qt startup smoke check passed (native batch commands explicitly enabled).' if '--native-batch' in sys.argv else 'Qt startup smoke check passed (no commands executed).')

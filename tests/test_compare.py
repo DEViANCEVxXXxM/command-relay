@@ -62,10 +62,34 @@ class CompareTests(unittest.TestCase):
         _,t=self.add(7,edited=True);self.assertEqual(c.previous_run(self.root,t)['status'],'not_applicable')
     def test_pre_run_bounded_history(self):
         _,header=self.add(1);self.add(2,task='other')
-        with patch.object(c,'MAX_HEADERS',1):self.assertEqual(c.previous_run(self.root,header)['status'],'limited')
+        with patch.object(c,'MAX_REPEAT_HEADERS',1):
+            limited=c.previous_run(self.root,header);self.assertEqual(limited['status'],'limited');self.assertEqual(limited['reason_key'],'repeat_header_limit')
         with patch.object(c,'MAX_ENTRIES',1):self.assertEqual(c.previous_run(self.root,header)['status'],'limited')
         with patch.object(c,'MAX_BASELINE_BYTES',1):self.assertEqual(c.previous_run(self.root,header)['verdict'],'NOT_EVALUATED')
         with patch.object(c.os,'scandir',side_effect=PermissionError):self.assertEqual(c.previous_run(self.root,header)['status'],'unavailable')
+    def test_pre_run_beyond_comparison_limit(self):
+        match,header=self.add(1)
+        for n in range(2,125):self.add(n,task=f'unrelated-{n}')
+        self.assertEqual(c.previous_run(self.root,header)['report_file'],match.name)
+        _,fresh=self.add(125,task='fresh')
+        (self.root/'report-20261125-070000-000125.txt').unlink()
+        self.assertEqual(c.previous_run(self.root,fresh)['status'],'no_match')
+        current=self.add(126)
+        comparison=self.compare(current)
+        self.assertEqual(comparison['status'],'not_available')
+        self.assertTrue(comparison['older_candidates_not_checked'])
+
+    def test_repeat_limit_translation_keys(self):
+        from command_relay.relay_terms import tr
+        _,header=self.add(1);self.add(2,task='other')
+        with patch.object(c,'MAX_REPEAT_HEADERS',1):
+            result=c.previous_run(self.root,header)
+        self.assertIn('лимита',tr(result['reason_key'],'ru'))
+        with patch.object(c.os,'scandir',side_effect=PermissionError):
+            result=c.previous_run(self.root,header)
+        self.assertEqual(result['reason_key'],'repeat_read_failed')
+        self.assertIn('историю',tr(result['reason_key'],'ru'))
+
     def test_pre_run_missing_history(self):
         _,header=self.add(1);self.assertEqual(c.previous_run(self.root/'missing',header)['status'],'no_match')
 
