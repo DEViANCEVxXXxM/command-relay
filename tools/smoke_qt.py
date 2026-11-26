@@ -109,6 +109,15 @@ for mode in ('casual', 'advanced'):
             localized.apply_mode('advanced' if mode == 'casual' else 'casual')
             assert localized.editor.toPlainText() == raw and localized.output.toPlainText() == raw
             start.assert_not_called()
+        # Runtime presentation is localized, but the actual report stays unchanged.
+        localized.import_data(b'Write-Output "READY"', 'raw.ps1')
+        assert localized.detail.text() == tr('runtime_loaded', 'ru')+'raw.ps1'
+        assert localized.editor.toPlainText() == 'Write-Output "READY"'
+        localized.copy_done(('full', 'raw.txt', 'PASS', 0), 'RAW REPORT\nPASS', None)
+        assert QApplication.clipboard().text() == 'RAW REPORT\nPASS'
+        assert 'PASS' in localized.detail.text() and 'RAW' in localized.detail.text()
+        assert localized.detail.toolTip() == tr('runtime_raw_warning', 'ru')
+        assert 'Process exit code:' not in tr('runtime_exit_zero', 'ru')
         # Verify Russian dialogs without any policy or network access.
         import queue
         safety = relay_qt.SafetyDialog(str(root), localized)
@@ -144,6 +153,7 @@ for mode in ('casual', 'advanced'):
         assert updates_dialog.trust.text() == tr('update_unverified', 'ru')
         assert not updates_dialog.prepare_button.isEnabled()
         safety.deleteLater(); updates_dialog.deleteLater()
+        assert localized.copy_ai_rules_action.text()==tr('copy_ai_rules','ru')
         localized.initial_restore_pending = False
         localized.deleteLater(); settle_layout()
 print('Qt localized workbench and dialog checks passed (Russian labels, both modes, raw content, default-deny permission and unverified update).')
@@ -316,6 +326,31 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     window.set_status('ready', 'READY')
     print('Qt idle timer and reduced motion checks passed (no commands executed).')
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
+    # Static AI rules copy is explicit and separate from session data.
+    from command_relay.relay_terms import ai_rules_text
+    action=window.copy_ai_rules_action
+    assert action in window.more.menu().actions() and action.objectName()=='copy_ai_rules'
+    assert action.text()==tr('copy_ai_rules','en')
+    before=(window.editor.toPlainText(),window.cwd.text(),window.output.toPlainText())
+    clipboard=QApplication.clipboard();old_clip=clipboard.text()
+    try:
+        clipboard.setText('unchanged until explicit action')
+        with patch.object(window,'start_process') as start, patch.object(relay_qt.session,'session_packet') as context:
+            action.trigger()
+            assert clipboard.text()==ai_rules_text(root)
+            assert window.detail.text()==tr('ai_rules_copied','en')
+            start.assert_not_called();context.assert_not_called()
+        with patch.object(relay_qt,'ai_rules_text',side_effect=OSError('missing')),patch.object(window,'error') as error:
+            action.trigger();error.assert_called_once_with(tr('ai_rules_unavailable','en'))
+            assert clipboard.text()==ai_rules_text(root)
+        window.copy_busy=True
+        with patch.object(window,'error') as error,patch.object(relay_qt,'ai_rules_text') as reader:
+            action.trigger();error.assert_called_once();reader.assert_not_called()
+        window.copy_busy=False
+        assert before==(window.editor.toPlainText(),window.cwd.text(),window.output.toPlainText())
+    finally:
+        window.copy_busy=False;clipboard.setText(old_clip)
+    print('Qt Copy AI rules checks passed (explicit static copy, missing guide, busy guard, unchanged workspace).')
     from command_relay import relay_updates as updates
     import time
     data = {'id': 1, 'tag_name': 'v4.10.0', 'draft': False, 'prerelease': False,
@@ -519,6 +554,78 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert packet['schema'] == 'command-relay/session-v1'
         assert packet['handoff']['latest_report'] is None
         assert packet['current_project']['network'] is False
+    # Verify Russian presentation while retaining the unchanged session schema.
+    with tempfile.TemporaryDirectory() as tmp, patch.object(relay_qt, 'REPORTS', Path(tmp)), \
+            patch.object(window, 'start_tool') as tool, patch.object(window, 'ui_language', 'ru'):
+        window.review_session_context()
+        title, work = tool.call_args.args
+        assert title == tr('result_session_title', 'ru')
+        assert work()['schema'] == 'command-relay/session-v1'
+    # Inspect the real dialog without modifying the task queue or running commands.
+    from PySide6.QtWidgets import QComboBox
+    def inspect_history(dialog):
+        assert dialog.windowTitle() == tr('result_history', 'ru')
+        combo = dialog.findChild(QComboBox)
+        assert [combo.itemData(i) for i in range(combo.count())] == ['All','Exit 0','Failed','Cancelled','Partial / unknown']
+        assert combo.itemText(1) == tr('result_filter_1', 'ru')
+        return QDialog.DialogCode.Rejected
+    with patch.object(window, 'ui_language', 'ru'), patch.object(QDialog, 'exec', inspect_history), \
+            patch.object(relay_qt.threading, 'Thread'):
+        window.history()
+    # Exercise actual selection/filtering and explicit report actions; no files opened externally.
+    from PySide6.QtWidgets import QTableWidget, QLabel, QLineEdit
+    from PySide6.QtCore import QItemSelectionModel
+    class ImmediateHistoryThread:
+        def __init__(self,target,daemon=True):self.target=target
+        def start(self):self.target()
+    with tempfile.TemporaryDirectory() as tmp:
+        folder=Path(tmp);meta=json.dumps({'version':1,'task_intent':{'title':'<b>History title</b>'},'assertions':{'exit_code':0,'metrics':[{'key':'CHECK_PASS','equals':True,'occurrence':'all'}]}})
+        for i,value in enumerate(('True','False')):
+            (folder/f'report-20261125-01000{i}-000000.txt').write_text('COMMAND RELAY REPORT\nStarted: 2026-11-25T01:00:0'+str(i)+'\nCommand file: task.json\nTask ID: task-'+str(i)+'\nRelay metadata: '+meta+'\n\n@step 01 — Work\nCHECK_PASS='+value+'\n@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T01:00:09\n',encoding='utf-8')
+        def inspect_redesigned_history(dialog):
+            for _ in range(5):app.processEvents()
+            table=dialog.findChild(QTableWidget,'historyRuns');op=dialog.findChild(QPushButton,'historyOpen');copy=dialog.findChild(QPushButton,'historyCopy');compare=dialog.findChild(QPushButton,'historyCompare');more=dialog.findChild(QPushButton,'historyMore')
+            detail=dialog.findChild(QLabel,'historyAssertions');heading=dialog.findChild(QLabel,'historyHeading')
+            assert table.rowCount()==3 and not table.item(0,0).flags() & Qt.ItemFlag.ItemIsSelectable
+            assert table.item(1,1).text()=='<b>History title</b>' and heading.textFormat()==Qt.TextFormat.PlainText
+            assert heading.text()=='<b>History title</b>' and 'FAIL (1/2)' in detail.text()
+            assert op.isEnabled() and copy.isEnabled() and not compare.isEnabled()
+            copy.click();assert copy_mock.call_args.args==('ai',folder/'report-20261125-010001-000000.txt')
+            op.click();assert open_mock.call_args.args==(folder/'report-20261125-010001-000000.txt',)
+            raw=next(a for a in more.menu().actions() if a.text()==tr('copy_raw','ru'))
+            with patch.object(QMessageBox,'question',return_value=QMessageBox.StandardButton.No) as confirm:
+                raw.trigger();assert confirm.call_args.args[-1]==QMessageBox.StandardButton.No;assert copy_mock.call_count==1
+            table.selectionModel().select(table.model().index(2,0),QItemSelectionModel.SelectionFlag.Select|QItemSelectionModel.SelectionFlag.Rows)
+            assert compare.isEnabled() and not op.isEnabled() and not copy.isEnabled() and not raw.isEnabled()
+            table.clearSelection();assert not compare.isEnabled() and not copy.isEnabled()
+            table.selectRow(2)
+            for _ in range(5):app.processEvents()
+            assert 'PASS (2/2)' in detail.text()
+            assert table.isColumnHidden(3)==(window.mode=='casual')
+            search=dialog.findChild(QLineEdit,'historySearch');timer=dialog.findChild(QTimer,'historyFilterTimer')
+            search.setText('task-0');timer.stop();timer.timeout.emit();assert table.rowCount()==2 and table.item(1,1).text()=='<b>History title</b>'
+            search.setText('not-found');timer.stop();timer.timeout.emit();assert table.rowCount()==0 and not copy.isEnabled() and not compare.isEnabled()
+            return QDialog.DialogCode.Rejected
+        with patch.object(window,'ui_language','ru'),patch.object(relay_qt,'REPORTS',folder),patch.object(QDialog,'exec',inspect_redesigned_history),patch.object(relay_qt.threading,'Thread',ImmediateHistoryThread),patch.object(window,'open_path') as open_mock,patch.object(window,'copy_report') as copy_mock:
+            for mode in ('casual','advanced'):
+                copy_mock.reset_mock();open_mock.reset_mock()
+                with patch.object(window,'mode',mode):window.history()
+        def inspect_paged_history(dialog):
+            for _ in range(5):app.processEvents()
+            table=dialog.findChild(QTableWidget,'historyRuns');more=dialog.findChild(QPushButton,'historyShowMore')
+            search=dialog.findChild(QLineEdit,'historySearch');timer=dialog.findChild(QTimer,'historyFilterTimer')
+            assert table.rowCount()==2 and not more.isHidden() and more.isEnabled()
+            assert table.selectionModel().selectedRows()[0].row()==1
+            more.click();assert table.rowCount()==3 and more.isHidden()
+            assert table.selectionModel().selectedRows()[0].row()==1
+            search.setText('task-0');timer.stop();timer.timeout.emit()
+            assert table.rowCount()==2 and more.isHidden()
+            search.clear();timer.stop();timer.timeout.emit()
+            assert table.rowCount()==2 and not more.isHidden()
+            return QDialog.DialogCode.Rejected
+        with patch.object(relay_qt.view,'HISTORY_PAGE_SIZE',1),patch.object(relay_qt,'REPORTS',folder),patch.object(QDialog,'exec',inspect_paged_history),patch.object(relay_qt.threading,'Thread',ImmediateHistoryThread):
+            window.history()
+    print('Qt redesigned history checks passed (grouping, actual assertions, selection, explicit copy, raw cancel, both modes, progressive rows and full-snapshot search).')
     print('Qt session review entry point checks passed (local-only preview).')
 
     # Mock all CLI traffic. Exercise the actual dialog, worker completion and confirmation.
@@ -567,6 +674,36 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert client.squash_merge.call_count == 2
         dialog.repo.setText('other/repo'); assert dialog.snapshot is None and not dialog.merge_button.isEnabled()
         dialog.reject(); dialog.deleteLater(); app.processEvents()
+    # Russian presentation must not weaken cancellation or alter snapshot metadata.
+    client.reset_mock(); client.squash_merge.side_effect = None
+    with patch.object(relay_github_qt, 'GitHubClient', return_value=client):
+        dialog = relay_github_qt.GitHubDialog(str(root), window, language='ru')
+        dialog.show(); dialog.repo.setText('owner/repo'); dialog.list_prs(); wait_worker(dialog)
+        dialog.inspect_pr(); wait_worker(dialog)
+        assert dialog.windowTitle() == tr('gh_title', 'ru')
+        assert dialog.merge_button.text() == tr('gh_merge', 'ru') and dialog.merge_button.isEnabled()
+        assert 'owner/repo' in dialog.detail.toPlainText() and 'b'*40 in dialog.detail.toPlainText()
+        errors = []
+        def cancel_ru_merge():
+            box = QApplication.activeModalWidget()
+            try:
+                assert isinstance(box, QMessageBox)
+                assert box.windowTitle() == tr('gh_confirm_title', 'ru')
+                assert box.defaultButton() is box.button(QMessageBox.StandardButton.Cancel)
+                assert box.defaultButton().text() == tr('gh_cancel', 'ru')
+                assert 'b'*40 in box.text() and 'повторно' in box.text()
+                box.defaultButton().click()
+            except Exception as exc:
+                errors.append(exc)
+                if box is not None: box.reject()
+        QTimer.singleShot(0, cancel_ru_merge); dialog.confirm_merge(); wait_worker(dialog)
+        assert not errors, errors
+        client.squash_merge.assert_not_called()
+        dialog.finished_work('merge', None, 'unknown')
+        assert dialog.outcome == 'unknown' and not dialog.merge_button.isEnabled()
+        assert dialog.notice.text() == tr('gh_merge_unverified', 'ru')
+        dialog.reject(); dialog.deleteLater(); app.processEvents()
+    print('Qt Russian GitHub manager checks passed (raw snapshot, cancel default, unknown outcome).')
     print('Qt GitHub PR manager checks passed (mocked list, inspect, cancel, merge and unknown outcome; no network writes).')
     window.hide()
     window.deleteLater()

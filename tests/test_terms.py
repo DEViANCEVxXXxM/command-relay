@@ -202,3 +202,86 @@ class CasualFlowTests(unittest.TestCase):
         self.assertEqual(len(casual_task_title({'title':'x'*200},'file',has_script=True,edited=False)),100)
         self.assertEqual(casual_task_title({'title':'old'},'file',has_script=True,edited=True,language='ru'),tr('casual_edited','ru'))
         self.assertEqual(casual_task_title({},'file',has_script=False,edited=False),tr('casual_empty'))
+
+
+class GitHubDialogCatalogTests(unittest.TestCase):
+    def test_github_catalog_placeholders_and_merge_notice(self):
+        from string import Formatter
+        from command_relay.relay_terms import _GITHUB_MESSAGES
+        for key, (en, ru) in _GITHUB_MESSAGES.items():
+            self.assertEqual({x[1] for x in Formatter().parse(en)},
+                             {x[1] for x in Formatter().parse(ru)}, key)
+        data = dict(repo='owner/repo', number=42, title='Raw <title>', head='feat/raw',
+                    base='main', head_sha='a'*40, base_sha='b'*40)
+        for language in ('en','ru'):
+            text = tr('gh_confirm_body', language).format(**data)
+            for raw in data.values(): self.assertIn(str(raw), text)
+        self.assertIn('повторно', tr('gh_confirm_body','ru'))
+        self.assertIn('не подтверждено', tr('gh_merge_unverified','ru'))
+        self.assertIn('не гарантирует', tr('gh_mask_warning','ru'))
+
+
+class ResultLocalizationTests(unittest.TestCase):
+    def test_result_catalog_formatting_and_review_semantics(self):
+        from string import Formatter
+        from command_relay.relay_terms import _RESULT_MESSAGES
+        for key, (en, ru) in _RESULT_MESSAGES.items():
+            self.assertEqual(tr(key, 'en'), en)
+            self.assertEqual(tr(key, 'ru'), ru)
+            self.assertEqual({x[1] for x in Formatter().parse(en) if x[1] is not None}, {x[1] for x in Formatter().parse(ru) if x[1] is not None}, key)
+        self.assertIn('не запускает', tr('result_queue_notice', 'ru'))
+        self.assertIn('автоматической отправки нет', tr('result_mask', 'ru'))
+        self.assertEqual(tr('result_filter_1', 'ru'), 'Код выхода 0')
+        self.assertNotIn('PASS', tr('result_filter_1', 'ru'))
+        self.assertIn('12', tr('result_count', 'ru').format(count=12))
+
+
+class RuntimeLocalizationTests(unittest.TestCase):
+    def test_runtime_messages_preserve_parameters_and_exit_semantics(self):
+        from string import Formatter
+        from command_relay.relay_terms import _RUNTIME_MESSAGES
+        for key, (en, ru) in _RUNTIME_MESSAGES.items():
+            self.assertEqual(tr(key, 'en'), en)
+            self.assertEqual(tr(key, 'ru'), ru)
+            self.assertEqual({x[1] for x in Formatter().parse(en)}, {x[1] for x in Formatter().parse(ru)}, key)
+        for language in ('en', 'ru'):
+            self.assertIn('PASS', tr('runtime_checks', language).format(verdict='PASS'))
+            self.assertIn('17', tr('runtime_exit_failed', language).format(code=17))
+            self.assertIn('0', tr('runtime_exit_zero', language))
+            self.assertNotIn('PASS', tr('runtime_exit_zero', language))
+            self.assertIn('raw.json', tr('runtime_copied', language).format(mode='full', name='raw.json'))
+        self.assertIn('без маскирования', tr('runtime_raw_warning', 'ru'))
+        self.assertIn('без гарантии', tr('runtime_masked_warning', 'ru'))
+
+
+class HistoryLocalizationTests(unittest.TestCase):
+    def test_history_labels_and_parameters(self):
+        from string import Formatter
+        from command_relay.relay_terms import _HISTORY_MESSAGES
+        for key,(en,ru) in _HISTORY_MESSAGES.items():
+            self.assertEqual(tr(key,'en'),en);self.assertEqual(tr(key,'ru'),ru)
+            self.assertEqual({x[1] for x in Formatter().parse(en) if x[1] is not None},{x[1] for x in Formatter().parse(ru) if x[1] is not None},key)
+        self.assertNotIn('PASS',tr('history_exit_zero','en'))
+        self.assertIn('без маскирования',tr('history_raw_question','ru'))
+
+
+class AIRulesTests(unittest.TestCase):
+    def test_distributed_rules_are_compact_and_capability_aware(self):
+        from command_relay.relay_terms import ai_rules_text
+        text=ai_rules_text(ROOT)
+        for phrase in ('command-relay/task-v1','asynchronous or parallel','bounded concurrency','manual queue requires explicit','Never detach','exit 0 alone','Copy session context'):
+            self.assertIn(phrase,text)
+        self.assertLess(len(text),12000)
+        self.assertNotIn('relay-ai-rules:',text)
+        self.assertNotEqual(tr('copy_ai_rules','en'),tr('copy_ai_rules','ru'))
+
+    def test_missing_malformed_oversized_guide_fails_closed(self):
+        from command_relay.relay_terms import ai_rules_text
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'docs').mkdir();guide=root/'docs'/'COMMAND_RELAY_AI_GUIDE.md'
+            with self.assertRaises(FileNotFoundError):ai_rules_text(root)
+            for value in ('', '<!-- relay-ai-rules:end -->\n<!-- relay-ai-rules:start -->', '<!-- relay-ai-rules:start -->\n<!-- relay-ai-rules:end -->', 'x'*256001):
+                guide.write_text(value,encoding='utf-8')
+                with self.assertRaises(ValueError):ai_rules_text(root)
+            guide.write_bytes(b'\xff')
+            with self.assertRaises(UnicodeError):ai_rules_text(root)

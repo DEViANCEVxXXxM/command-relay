@@ -343,6 +343,208 @@ def casual_task_title(task, source, *, has_script, edited, language='en'):
     return title or tr('casual_untitled', language)
 
 
+# GitHub presentation only: stable statuses, identifiers and exported packets stay raw.
+_GITHUB_MESSAGES = {
+    'gh_title': ('GitHub pull requests', 'Pull requests GitHub'),
+    'gh_intro': ('Optional GitHub CLI integration · no automatic writes', 'Необязательная интеграция GitHub CLI · без автоматических изменений'),
+    'gh_repository': ('Repository', 'Репозиторий'),
+    'gh_origin': ('Use workspace origin', 'Использовать origin'),
+    'gh_refresh': ('Refresh open PRs', 'Обновить список PR'),
+    'gh_pull_request': ('Pull request', 'Pull request'),
+    'gh_number': ('Enter PR number or select from list', 'Введите номер PR или выберите из списка'),
+    'gh_inspect': ('Inspect / refresh', 'Проверить / обновить'),
+    'gh_detail': ('Select a repository and PR, then inspect its current status.', 'Выберите репозиторий и PR, затем проверьте текущее состояние.'),
+    'gh_ready': ('Ready to detect workspace origin.', 'Можно определить origin рабочей папки.'),
+    'gh_merge': ('Squash and merge…', 'Выполнить squash merge…'),
+    'gh_review_copy': ('Review / copy status', 'Проверить / копировать статус'),
+    'gh_close': ('Close', 'Закрыть'),
+    'gh_working': ('Working…', 'Выполняется…'),
+    'gh_worker_failed': ('Could not start worker.', 'Не удалось запустить фоновую операцию.'),
+    'gh_invalid_number': ('Enter a positive pull request number.', 'Введите положительный номер PR.'),
+    'gh_merge_unverified': ('Merge not verified. Refresh the PR before any further action. No retry or branch deletion was attempted.', 'Слияние не подтверждено. Обновите PR перед любым дальнейшим действием. Повторная попытка и удаление ветки не выполнялись.'),
+    'gh_origin_detected': ('Repository detected. Refresh open PRs or enter a PR number.', 'Репозиторий найден. Обновите список открытых PR или введите номер.'),
+    'gh_list_count': ('{count} open PRs loaded.', 'Загружено открытых PR: {count}.'),
+    'gh_list_limit': (' List limited to 100; enter a PR number to inspect another.', ' Список ограничен 100 PR; для проверки другого введите его номер.'),
+    'gh_list_select': (' Select and inspect a PR.', ' Выберите и проверьте PR.'),
+    'gh_snapshot': ('Review the snapshot. GitHub server policies remain authoritative.', 'Проверьте снимок состояния. Правила сервера GitHub остаются обязательными.'),
+    'gh_merge_verified': ('Merge verified. Remote branch cleanup is left to GitHub automatic deletion settings or manual review. No local checkout or deletion.', 'Слияние подтверждено. Удаление удалённой ветки зависит от настроек GitHub или ручной проверки. Локальная ветка не переключалась и не удалялась.'),
+    'gh_confirm_title': ('Confirm squash merge', 'Подтвердите squash merge'),
+    'gh_confirm_action': ('Squash and merge', 'Выполнить squash merge'),
+    'gh_confirm_body': ('{repo} · PR #{number}\n{title}\n\n{head} → {base}\nHead SHA: {head_sha}\nBase SHA: {base_sha}\n\nThis writes to GitHub. The reviewed snapshot will be revalidated. No admin bypass or branch deletion.', '{repo} · PR #{number}\n{title}\n\n{head} → {base}\nHead SHA: {head_sha}\nBase SHA: {base_sha}\n\nЭто изменит данные на GitHub. Проверенный снимок будет проверен повторно. Без обхода ограничений администратора и удаления веток.'),
+    'gh_export_failed': ('Could not prepare protected export; nothing copied.', 'Не удалось подготовить защищённый экспорт; ничего не скопировано.'),
+    'gh_review_json': ('Review GitHub status JSON', 'Проверьте JSON статуса GitHub'),
+    'gh_mask_warning': ('Best-effort masking only. Review before copying or sharing.', 'Маскирование не гарантирует конфиденциальность. Проверьте данные перед копированием или отправкой.'),
+    'gh_copy_json': ('Copy JSON', 'Копировать JSON'),
+    'gh_cancel': ('Cancel', 'Отмена'),
+    'gh_state': ('State at inspection: ', 'Состояние при проверке: '),
+    'gh_observed': ('Observed UTC: ', 'Время проверки UTC: '),
+    'gh_checks': ('Checks:', 'Проверки:'),
+    'gh_readiness': ('Readiness at inspection: ', 'Готовность при проверке: '),
+    'gh_readiness_yes': ('READY (server rules still apply)', 'ГОТОВ (правила сервера действуют)'),
+    'gh_readiness_no': ('BLOCKED', 'ЗАБЛОКИРОВАН'),
+    'gh_outcome': ('Merge outcome: ', 'Результат слияния: '),
+    'gh_verified_sha': ('Verified merge SHA: ', 'Подтверждённый SHA слияния: '),
+}
+for _key, (_english, _russian) in _GITHUB_MESSAGES.items():
+    _MESSAGES['en'][_key] = _english
+    _MESSAGES['ru'][_key] = _russian
+
+
+_RESULT_MESSAGES = {
+    'result_busy': ('Finish the current run or copy first', 'Сначала завершите текущий запуск или копирование'),
+    'result_workspace': ('Select a valid workspace', 'Выберите действительную рабочую папку'),
+    'result_session_prepare': ('Preparing session context…', 'Подготовка контекста сессии…'),
+    'result_session_title': ('Workspace session context', 'Контекст рабочей сессии'),
+    'result_wait': ('Wait for completion or choose a historical report', 'Дождитесь завершения или выберите отчёт из истории'),
+    'result_no_report': ('No report selected', 'Отчёт не выбран'),
+    'result_copy_busy': ('Preparing previous copy…', 'Подготовка предыдущего копирования…'),
+    'result_tool_busy': ('Another local tool is running', 'Уже выполняется другой локальный инструмент'),
+    'result_mask': ('Best-effort masking applied. Review before copying or saving; no automatic sharing.', 'Применено маскирование без гарантии полноты. Проверьте данные перед копированием или сохранением; автоматической отправки нет.'),
+    'result_copy_json': ('Copy JSON', 'Копировать JSON'),
+    'result_save_local': ('Save local JSON', 'Сохранить локальный JSON'),
+    'result_save_json': ('Save JSON…', 'Сохранить JSON…'),
+    'result_close': ('Close', 'Закрыть'),
+    'result_queue': ('Task queue — manual', 'Очередь задач — ручная'),
+    'result_queue_notice': ('Session queue only. Loading a task never runs it or changes workspace.', 'Очередь только для текущей сессии. Загрузка задачи не запускает её и не меняет рабочую папку.'),
+    'result_add_tasks': ('Add tasks', 'Добавить задачи'),
+    'result_replace': ('Replace editor?', 'Заменить содержимое редактора?'),
+    'result_load_question': ('Load selected task into editor?', 'Загрузить выбранную задачу в редактор?'),
+    'result_add_tasks_button': ('Add tasks…', 'Добавить задачи…'),
+    'result_load_selected': ('Load selected', 'Загрузить выбранную'),
+    'result_remove': ('Remove', 'Удалить'),
+    'result_completed': ('Choose a completed report', 'Выберите завершённый отчёт'),
+    'result_metrics': ('Observed metrics', 'Наблюдаемые метрики'),
+    'result_two_reports': ('Select two reports', 'Выберите два отчёта'),
+    'result_compare_metrics_title': ('Compare metrics (old → new)', 'Сравнение метрик (старый → новый)'),
+    'result_select_export': ('Select reports to export', 'Выберите отчёты для экспорта'),
+    'result_export_reports': ('Export selected reports', 'Экспорт выбранных отчётов'),
+    'result_evidence': ('Evidence bundle', 'Архив отчётов'),
+    'result_history': ('Run history', 'История запусков'),
+    'result_search': ('Search history', 'Поиск по истории'),
+    'result_started': ('Started', 'Начало'),
+    'result_command': ('Command', 'Команда'),
+    'result_process_status': ('Process status', 'Статус процесса'),
+    'result_elapsed': ('Elapsed', 'Время'),
+    'result_loading': ('Loading history…', 'Загрузка истории…'),
+    'result_review_session': ('Review workspace session…', 'Просмотр контекста сессии…'),
+    'result_read_error': ('History could not be read; use Refresh or Reports > Folder.', 'Не удалось прочитать историю; обновите её или откройте папку отчётов.'),
+    'result_one_report': ('Select one report', 'Выберите один отчёт'),
+    'result_large_report': ('Large report: use external diff viewer', 'Большой отчёт: используйте внешний инструмент сравнения'),
+    'result_too_many': ('Too many compact lines for inline comparison', 'Слишком много строк для встроенного сравнения'),
+    'result_compact': ('Compact comparison', 'Компактное сравнение'),
+    'result_no_diff': ('No differences', 'Нет различий'),
+    'result_view_full': ('View full', 'Открыть полностью'),
+    'result_compare_two': ('Compare 2', 'Сравнить два'),
+    'result_metrics_button': ('Metrics', 'Метрики'),
+    'result_compare_metrics': ('Compare metrics', 'Сравнить метрики'),
+    'result_export_zip': ('Export ZIP', 'Экспорт ZIP'),
+    'result_refresh': ('Refresh', 'Обновить'),
+    'result_filter_0': ('All', 'Все'),
+    'result_filter_1': ('Exit 0', 'Код выхода 0'),
+    'result_filter_2': ('Failed', 'Ошибка процесса'),
+    'result_filter_3': ('Cancelled', 'Отменено'),
+    'result_filter_4': ('Partial / unknown', 'Частично / неизвестно'),
+    'result_count': ('{count} reports', 'Отчётов: {count}'),
+    'result_unreadable': (' | {count} unreadable', ' | Не прочитано: {count}'),
+    'result_limited': (' | Limited history; older files remain in Reports folder.', ' | История ограничена; старые файлы остаются в папке отчётов.'),
+}
+for _key, (_english, _russian) in _RESULT_MESSAGES.items():
+    _MESSAGES['en'][_key] = _english
+    _MESSAGES['ru'][_key] = _russian
+
+
+_RUNTIME_MESSAGES = {'runtime_workspace': ('Workspace', 'Рабочая папка'),
+ 'runtime_library': ('Script library', 'Библиотека скриптов'),
+ 'runtime_save_script': ('Save script', 'Сохранить скрипт'),
+ 'runtime_open_task': ('Open task or script', 'Открыть задачу или скрипт'),
+ 'runtime_loaded': ('Loaded ', 'Загружено: '),
+ 'runtime_loaded_tip': ('Loaded script: ', 'Загруженный скрипт: '),
+ 'runtime_review_high': ('⚠ Review commands', '⚠ Проверьте команды'),
+ 'runtime_review_effects': ('Review effects', 'Проверьте возможные последствия'),
+ 'runtime_copy_wait': ('Wait for Copied before starting another run',
+                       'Дождитесь завершения копирования перед новым запуском'),
+ 'runtime_script_workspace': ('Enter a script and valid workspace',
+                              'Введите скрипт и укажите действительную рабочую папку'),
+ 'runtime_valid_workspace': ('Select a valid workspace', 'Выберите действительную рабочую папку'),
+ 'runtime_saved': ('Saved ', 'Сохранено: '),
+ 'runtime_save_failed': ('Save failed: ', 'Ошибка сохранения: '),
+ 'runtime_hash_title': ('Compute SHA-256', 'Вычислить SHA-256'),
+ 'runtime_hashing': ('Hashing selected file…', 'Вычисление хеша выбранного файла…'),
+ 'runtime_copy_result': ('Copy result', 'Копировать результат'),
+ 'runtime_hash_complete': ('Hash operation complete', 'Вычисление хеша завершено'),
+ 'runtime_copy_failed': ('Copy failed', 'Ошибка копирования'),
+ 'runtime_raw_warning': ('Raw copy: no privacy masking. Review before sharing.',
+                         'Необработанная копия: без маскирования данных. Проверьте перед отправкой.'),
+ 'runtime_masked_warning': ('Best-effort masking only. Review before sharing. Checks apply to declared assertions '
+                            'before masking.',
+                            'Маскирование без гарантии полноты. Проверьте перед отправкой. Проверки относятся к '
+                            'заявленным assertions до маскирования.'),
+ 'runtime_warm_ready': ('AI result prepared locally. Click Copy to share; review before sending.',
+                        'Результат для AI подготовлен локально. Нажмите «Копировать» и проверьте данные перед '
+                        'отправкой.'),
+ 'runtime_active_operation': ('Finish the active operation first', 'Сначала завершите активную операцию'),
+ 'runtime_profiles': ('Workspace profiles', 'Профили рабочих папок'),
+ 'runtime_profile_existing': ('Select an existing workspace first', 'Сначала выберите существующую рабочую папку'),
+ 'runtime_profile_save': ('Save current workspace', 'Сохранить текущую рабочую папку'),
+ 'runtime_profile_name': ('Profile name', 'Имя профиля'),
+ 'runtime_profile_replace': ('Replace profile?', 'Заменить профиль?'),
+ 'runtime_profile_missing': ('Workspace no longer exists', 'Рабочая папка больше не существует'),
+ 'runtime_profile_save_current': ('Save current', 'Сохранить текущую'),
+ 'runtime_profile_use': ('Use selected', 'Использовать выбранный'),
+ 'runtime_profile_remove': ('Remove profile', 'Удалить профиль'),
+ 'runtime_task_loaded': ('AI task loaded: {task} — review before running',
+                         'Задача AI загружена: {task} — проверьте перед запуском'),
+ 'runtime_copy_prepare': ('Preparing {mode}…', 'Подготовка копии ({mode})…'),
+ 'runtime_copied': ('Copied {mode} — {name}', 'Скопировано ({mode}) — {name}'),
+ 'runtime_checks': (' | Checks: {verdict}', ' | Проверки: {verdict}'),
+ 'runtime_masked': (' | Masked: {count}', ' | Маскирований: {count}'),
+ 'runtime_cancelled': ('CANCELLED', 'ОТМЕНЕНО'),
+ 'runtime_exit_zero': ('EXIT 0', 'КОД ВЫХОДА 0'),
+ 'runtime_exit_failed': ('FAILED / EXIT {code}', 'ОШИБКА / КОД ВЫХОДА {code}')}
+for _key, (_english, _russian) in _RUNTIME_MESSAGES.items():
+    _MESSAGES['en'][_key] = _english
+    _MESSAGES['ru'][_key] = _russian
+
+
+_HISTORY_MESSAGES = {'history_search': ('Search tasks, IDs or workspaces…', 'Поиск задач, ID или рабочих папок…'), 'history_task': ('Task', 'Задача'), 'history_time': ('Time', 'Время'), 'history_duration': ('Duration', 'Длительность'), 'history_all_runs': ('All runs', 'Все запуски'), 'history_exit_zero': ('Exit code 0', 'Код выхода 0'), 'history_exit': ('Exit code {code}', 'Код выхода {code}'), 'history_cancelled': ('Cancelled', 'Отменено'), 'history_partial': ('Incomplete', 'Не завершён'), 'history_unknown': ('Unknown', 'Неизвестно'), 'history_no_selection': ('Select a run to see its details.', 'Выберите запуск, чтобы увидеть подробности.'), 'history_selected': ('{count} reports selected', 'Выбрано отчётов: {count}'), 'history_visible': ('{shown} of {total} runs', 'Запусков: {shown} из {total}'), 'history_empty': ('No matching runs.', 'Нет подходящих запусков.'), 'history_details': ('Run details', 'Сведения о запуске'), 'history_detail': ('Process: {status}   •   Duration: {duration}\nStarted: {date}   •   Task ID: {task}\nWorkspace: {workspace}\nReport: {report}', 'Процесс: {status}   •   Длительность: {duration}\nНачало: {date}   •   ID задачи: {task}\nРабочая папка: {workspace}\nОтчёт: {report}'), 'history_assert_loading': ('Checking declared assertions…', 'Проверка заявленных условий…'), 'history_assert_status': ('Assertions: {status} ({passed}/{total})', 'Проверки: {status} ({passed}/{total})'), 'history_assert_none': ('Assertions: not requested', 'Проверки: не заданы'), 'history_assert_limited': ('Assertions: report exceeds preview limit; open the report.', 'Проверки: отчёт превышает лимит предпросмотра; откройте отчёт.'), 'history_assert_unavailable': ('Assertions: unavailable', 'Проверки: недоступны'), 'history_assert_note': ('Exit code 0 is not a test verdict.', 'Код выхода 0 не означает успешного прохождения тестов.'), 'history_open': ('Open report', 'Открыть отчёт'), 'history_copy': ('Copy AI result', 'Копировать AI-результат'), 'history_more': ('More actions', 'Другие действия'), 'history_compare': ('Compare reports', 'Сравнить отчёты'), 'history_stats': ('Run statistics', 'Статистика запуска'), 'history_compare_stats': ('Compare statistics', 'Сравнить статистику'), 'history_export': ('Export reports', 'Экспорт отчётов'), 'history_session': ('Session details', 'Сведения о сессии'), 'history_folder': ('Open reports folder', 'Открыть папку отчётов'), 'history_raw_title': ('Copy unmasked report?', 'Копировать отчёт без маскирования?'), 'history_raw_question': ('The full report may contain private data. Copy it without masking?', 'Полный отчёт может содержать приватные данные. Копировать без маскирования?'), 'history_select_two': ('Select two runs to compare (Ctrl or Shift).', 'Выберите два запуска для сравнения (Ctrl или Shift).')}
+_HISTORY_MESSAGES.update({
+    'history_show_more': ('Show more runs', 'Показать ещё запуски'),
+    'history_page_count': ('Showing {shown} of {matched} matching runs · {total} loaded', 'Показано {shown} из {matched} подходящих запусков · загружено {total}'),
+})
+for _key, (_english, _russian) in _HISTORY_MESSAGES.items():
+    _MESSAGES['en'][_key] = _english
+    _MESSAGES['ru'][_key] = _russian
+
+
+_AI_RULE_MESSAGES = {
+    'copy_ai_rules': ('Copy AI rules', 'Копировать правила для ИИ'),
+    'ai_rules_copied': ('AI rules copied. Paste them into a new AI chat.', 'Правила для ИИ скопированы. Вставьте их в новый чат.'),
+    'ai_rules_unavailable': ('AI rules are unavailable. Restore the distributed AI Operating Guide.', 'Правила для ИИ недоступны. Восстановите руководство AI Operating Guide из поставки.'),
+}
+for _key, (_english, _russian) in _AI_RULE_MESSAGES.items():
+    _MESSAGES['en'][_key] = _english
+    _MESSAGES['ru'][_key] = _russian
+
+
+def ai_rules_text(root: Path) -> str:
+    """Read only the static, bounded rules excerpt from the distributed guide."""
+    path = root / 'docs' / 'COMMAND_RELAY_AI_GUIDE.md'
+    with path.open('rb') as source:
+        raw = source.read(256_001)
+    if len(raw) > 256_000:
+        raise ValueError('AI guide exceeds size limit')
+    text = raw.decode('utf-8').replace('\r\n', '\n')
+    start, end = '<!-- relay-ai-rules:start -->', '<!-- relay-ai-rules:end -->'
+    if text.count(start) != 1 or text.count(end) != 1:
+        raise ValueError('Missing or ambiguous AI rules excerpt')
+    _, _, remainder = text.partition(start)
+    rules, marker, _ = remainder.partition(end)
+    rules = rules.strip()
+    if not marker or not rules.startswith('# Command Relay — AI working rules\n') or len(rules) > 12_000:
+        raise ValueError('Invalid AI rules excerpt')
+    return rules
+
+
 def tr(key, language=DEFAULT_LANGUAGE):
     """Stable message IDs; missing translations fall back to English, not raw IDs."""
     default = _MESSAGES[DEFAULT_LANGUAGE][key]

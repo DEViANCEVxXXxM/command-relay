@@ -13,7 +13,7 @@ from .relay_core import (
     prepare, read_settings, sha,
 )
 from .relay_version import VERSION
-from .relay_terms import dialog_result_text, casual_stage, casual_task_title
+from .relay_terms import dialog_result_text, casual_stage, casual_task_title, ai_rules_text
 from .relay_terms import (confirm_usage_terms, choose_language, saved_language, startup_language, tr,
                           MODES, DEFAULT_MODE, saved_mode, startup_mode, sidebar_preference)
 from .relay_windows import apply_neutral_chrome, set_app_identity
@@ -772,6 +772,8 @@ class App(QMainWindow):
             a=parent.addAction(label);a.triggered.connect(lambda checked=False:fn())
             if edit:self.edit_controls.append(a)
             return a
+        self.copy_ai_rules_action=action(menu,self.ui('copy_ai_rules'),self.copy_ai_rules,True)
+        self.copy_ai_rules_action.setObjectName('copy_ai_rules')
         action(menu,self.ui('copy_session'),self.copy_session_context,True)
         action(menu,self.ui('clear_editor'),self.clear,True)
         menu.addSeparator()
@@ -955,11 +957,11 @@ class App(QMainWindow):
         bar.showMessage('●  '+text)
     def error(self,s):QMessageBox.warning(self,'Command Relay',str(s))
     def browse(self):
-        d=QFileDialog.getExistingDirectory(self,'Workspace',self.cwd.text())
+        d=QFileDialog.getExistingDirectory(self,self.ui('runtime_workspace'),self.cwd.text())
         if d:self.cwd.setText(d)
     def apply_wrap(self):self.output.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth if self.wrap.isChecked() else QPlainTextEdit.LineWrapMode.NoWrap)
     def choose_lib(self):
-        p=QFileDialog.getExistingDirectory(self,'Script library',str(self.lib))
+        p=QFileDialog.getExistingDirectory(self,self.ui('runtime_library'),str(self.lib))
         if p:self.lib=pathlib.Path(p);self.liblabel.setText(p);self.refresh_lib()
     def refresh_lib(self):
         self.library.clear()
@@ -971,13 +973,13 @@ class App(QMainWindow):
     def load_lib(self):
         if self.library.currentItem():self.load(str(self.lib/self.library.currentItem().text()))
     def save_script(self):
-        p,_=QFileDialog.getSaveFileName(self,'Save script',str(self.lib/'script.txt'),'Scripts (*.txt *.ps1)')
+        p,_=QFileDialog.getSaveFileName(self,self.ui('runtime_save_script'),str(self.lib/'script.txt'),'Scripts (*.txt *.ps1)')
         if p:
             try:atomic_text(pathlib.Path(p),self.editor.toPlainText());self.refresh_lib()
             except OSError as e:self.error(e)
     def open(self):
         if self.running:return
-        p,_=QFileDialog.getOpenFileName(self,'Open task or script','','Commands (*.txt *.ps1 *.md *.json);;All files (*)')
+        p,_=QFileDialog.getOpenFileName(self,self.ui('runtime_open_task'),'','Commands (*.txt *.ps1 *.md *.json);;All files (*)')
         if p:self.load(p)
     def load(self,path):
         if self.running:return
@@ -985,14 +987,14 @@ class App(QMainWindow):
             p=pathlib.Path(path);data=p.read_bytes();self.import_data(data,p.name,sha(data))
         except (OSError,ValueError,UnicodeError) as e:self.error(e)
     def import_data(self,data,name,digest=None):
-        script,task=load_input(data);self.task=task;self.source=name;self.editor.setPlainText(script);self.loaded=self.editor.toPlainText();self.source_hash=digest;self.command_label.setText(self.ui('commands_prefix')+name);self.detail.setText(self.ui('imported') if task else 'Loaded '+name)
+        script,task=load_input(data);self.task=task;self.source=name;self.editor.setPlainText(script);self.loaded=self.editor.toPlainText();self.source_hash=digest;self.command_label.setText(self.ui('commands_prefix')+name);self.detail.setText(self.ui('imported') if task else self.ui('runtime_loaded')+name)
         # Import is a preview only. Keep metadata available without blocking the UI.
         metadata = '\n'.join(f'{k}: {v}' for k,v in task.items() if v)
-        self.command_label.setToolTip(metadata or 'Loaded script: '+name)
+        self.command_label.setToolTip(metadata or self.ui('runtime_loaded_tip')+name)
         self.detail.setToolTip(metadata or '')
         if task:
             task_id = task.get('task_id') or task.get('title') or name
-            self.detail.setText('AI task loaded: '+task_id.replace('\n',' ').replace('\r',' ')[:80]+' — review before running')
+            self.detail.setText(self.ui('runtime_task_loaded').format(task=task_id.replace('\n',' ').replace('\r',' ')[:80]))
         self.invalidate_casual_result()
     def paste(self):
         if not self.running:
@@ -1005,7 +1007,7 @@ class App(QMainWindow):
         result=privacy.inspect_script(raw if prepared is None else prepared)
         level=result['level'];matches=result['matches']
         self.inspector_label.setVisible(level!='none')
-        self.inspector_label.setText('⚠ Review commands' if level=='high' else 'Review effects')
+        self.inspector_label.setText(self.ui('runtime_review_high') if level=='high' else self.ui('runtime_review_effects'))
         self.inspector_label.setProperty('risk_level',level);self.style_inspector()
         self.inspector_label.setToolTip('\n'.join(m['label'] for m in matches)+('\nScan limited.' if result['scan_limited'] else '')+'\n'+result['note'])
         return result
@@ -1095,9 +1097,9 @@ class App(QMainWindow):
         return f'COMMAND RELAY REPORT\nStarted: {datetime.datetime.now().isoformat(timespec="seconds")}\nWorking directory: {self.cwd.text()}\nCommand file: {name}\n{extra}\n'
     def run(self):
         if self.running or self.stop_inflight:return
-        if self.copy_busy:self.detail.setText('Wait for Copied before starting another run');return
+        if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
         raw=self.editor.toPlainText();cwd=self.cwd.text()
-        if not raw.strip() or not pathlib.Path(cwd).is_dir():return self.error('Enter a script and valid workspace')
+        if not raw.strip() or not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_script_workspace'))
         try:script=prepare(raw)
         except ValueError as e:return self.error(e)
         inspection=self.update_inspector(script)
@@ -1137,8 +1139,8 @@ class App(QMainWindow):
         return dialog.clickedButton() is run
     def run_git(self,action):
         if self.running or self.stop_inflight:return
-        if self.copy_busy:self.detail.setText('Wait for Copied before starting another run');return
-        if not pathlib.Path(self.cwd.text()).is_dir():return self.error('Select a valid workspace')
+        if self.copy_busy:self.detail.setText(self.ui('runtime_copy_wait'));return
+        if not pathlib.Path(self.cwd.text()).is_dir():return self.error(self.ui('runtime_valid_workspace'))
         try:
             metadata=json.dumps(intelligence.run_metadata(self.cwd.text(),{},True),separators=(',',':'))
             self.begin(action,self.header('Built-in: '+action,'Relay metadata: '+metadata+'\nOperation: read-only Git\n'));self.start_process('git',git_args(action))
@@ -1186,13 +1188,13 @@ class App(QMainWindow):
             fd,tmp=tempfile.mkstemp(dir=REPORTS,prefix='.latest-',suffix='.tmp');os.close(fd)
             try:shutil.copyfile(archive,tmp);os.replace(tmp,REPORTS/'latest.txt')
             finally:pathlib.Path(tmp).unlink(missing_ok=True)
-            self.detail.setText('Saved '+archive.name)
-        except OSError as e:self.current=self.active if self.active.exists() else self.current;self.detail.setText('Save failed: '+str(e))
+            self.detail.setText(self.ui('runtime_saved')+archive.name)
+        except OSError as e:self.current=self.active if self.active.exists() else self.current;self.detail.setText(self.ui('runtime_save_failed')+str(e))
         self.casual_report_ready=bool(self.current and self.current!=self.active and self.current.is_file())
         self.set_busy(False)
         elapsed=int(time.monotonic()-self.started)
         kind='cancelled' if self.cancelled else 'success' if code==0 else 'failed'
-        label='CANCELLED' if self.cancelled else 'EXIT 0' if code==0 else f'FAILED / EXIT {code}'
+        label=self.ui('runtime_cancelled') if self.cancelled else self.ui('runtime_exit_zero') if code==0 else self.ui('runtime_exit_failed').format(code=code)
         self.set_status(kind,f'{label}  |  {elapsed}s  |  PowerShell')
         if self.current and self.current!=self.active:self.warm_export(self.current)
     def update_clock(self):
@@ -1216,22 +1218,31 @@ class App(QMainWindow):
         if self.running and self.active==token and self.proc and not ok:self.proc.kill();self.append('\nRunner warning: process-tree termination not confirmed.\n')
     def hash_tool(self):
         if self.running:return
-        p,_=QFileDialog.getOpenFileName(self,'Compute SHA-256')
+        p,_=QFileDialog.getOpenFileName(self,self.ui('runtime_hash_title'))
         if not p:return
-        self.detail.setText('Hashing selected file…')
+        self.detail.setText(self.ui('runtime_hashing'))
         def work():
             try:self.signals.hashDone.emit(p,file_hash(p))
             except OSError as e:self.signals.hashDone.emit(p,'ERROR: '+str(e))
         threading.Thread(target=work,daemon=True).start()
     def hash_done(self,path,digest):
-        box=QMessageBox(self);box.setWindowTitle('SHA-256');box.setText(path+'\n'+digest);copy=box.addButton('Copy result',QMessageBox.ButtonRole.ActionRole);box.addButton(QMessageBox.StandardButton.Close);box.exec()
+        box=QMessageBox(self);box.setWindowTitle('SHA-256');box.setText(path+'\n'+digest);copy=box.addButton(self.ui('runtime_copy_result'),QMessageBox.ButtonRole.ActionRole);box.addButton(QMessageBox.StandardButton.Close);box.exec()
         if box.clickedButton()==copy:QApplication.clipboard().setText(privacy.protect_text('FILE='+path+'\nSHA256='+digest)[0])
-        self.detail.setText('Hash operation complete')
+        self.detail.setText(self.ui('runtime_hash_complete'))
+    def copy_ai_rules(self):
+        if self.running or self.copy_busy:return self.error(self.ui('result_busy'))
+        try:
+            text=ai_rules_text(ROOT)
+        except (OSError, UnicodeError, ValueError):
+            return self.error(self.ui('ai_rules_unavailable'))
+        QApplication.clipboard().setText(text)
+        self.detail.setText(self.ui('ai_rules_copied'))
+
     def copy_session_context(self):
-        if self.running or self.copy_busy:return self.error('Finish the current run or copy first')
+        if self.running or self.copy_busy:return self.error(self.ui('result_busy'))
         cwd=self.cwd.text()
-        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
-        self.copy_busy=True;self.detail.setText('Preparing session context…')
+        if not pathlib.Path(cwd).is_dir():return self.error(self.ui('result_workspace'))
+        self.copy_busy=True;self.detail.setText(self.ui('result_session_prepare'))
         def work():
             try:
                 packet=privacy.protect_packet(session.session_packet(REPORTS,cwd))
@@ -1240,10 +1251,10 @@ class App(QMainWindow):
             except Exception as e:self.signals.copyDone.emit(('session context','',None,0),None,'Could not prepare protected session export')
         threading.Thread(target=work,daemon=True).start()
     def review_session_context(self):
-        if self.running or self.copy_busy:return self.error('Finish the current run or copy first')
+        if self.running or self.copy_busy:return self.error(self.ui('result_busy'))
         cwd=self.cwd.text()
-        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
-        self.start_tool('Workspace session context',lambda:session.session_packet(REPORTS,cwd))
+        if not pathlib.Path(cwd).is_dir():return self.error(self.ui('result_workspace'))
+        self.start_tool(self.ui('result_session_title'),lambda:session.session_packet(REPORTS,cwd))
     def warm_export(self,path):
         # One bounded speculative worker. Never write to clipboard on completion.
         if self.warm_path is not None or self.copy_busy:return
@@ -1263,18 +1274,18 @@ class App(QMainWindow):
             self.warm_result=prepared
             if not waiting and not self.copy_busy:
                 # Do not replace status/error messages or clipboard content.
-                self.detail.setToolTip('AI result prepared locally. Click Copy to share; review before sending.')
+                self.detail.setToolTip(self.ui('runtime_warm_ready'))
         if waiting:
             if prepared is not None:self.copy_done(prepared.info,prepared.text,None)
             else:self.start_copy_worker(path,'ai')
     def start_copy_worker(self,p,mode):
         threading.Thread(target=lambda:self.signals.copyDone.emit(*exports.build_copy(p,mode)),daemon=True).start()
     def copy_report(self,mode,path=None):
-        if self.running and path is None:return self.error('Wait for completion or choose a historical report')
+        if self.running and path is None:return self.error(self.ui('result_wait'))
         p=path or self.current
-        if not p:return self.error('No report selected')
-        if self.copy_busy:self.detail.setText('Preparing previous copy…');return
-        self.copy_busy=True;self.detail.setText('Preparing '+mode+'…')
+        if not p:return self.error(self.ui('result_no_report'))
+        if self.copy_busy:self.detail.setText(self.ui('result_copy_busy'));return
+        self.copy_busy=True;self.detail.setText(self.ui('runtime_copy_prepare').format(mode=mode))
         if mode=='ai':
             cached=self.warm_result
             if cached is not None and cached.path==p:
@@ -1285,12 +1296,12 @@ class App(QMainWindow):
         self.start_copy_worker(p,mode)
     def copy_done(self,info,out,error):
         self.copy_busy=False
-        if error:self.detail.setText('Copy failed');return self.error(error)
+        if error:self.detail.setText(self.ui('runtime_copy_failed'));return self.error(error)
         mode,name,verdict,masked=info;QApplication.clipboard().setText(out)
-        self.detail.setText('Copied '+mode+' — '+name+(' | Checks: '+verdict if verdict and verdict!='NOT_REQUESTED' else '')+(' | Masked: '+str(masked) if masked else '')+(' | RAW' if mode=='full' else ''))
-        self.detail.setToolTip('Raw copy: no privacy masking. Review before sharing.' if mode=='full' else 'Best-effort masking only. Review before sharing. Checks apply to declared assertions before masking.')
+        self.detail.setText(self.ui('runtime_copied').format(mode=mode,name=name)+(self.ui('runtime_checks').format(verdict=verdict) if verdict and verdict!='NOT_REQUESTED' else '')+(self.ui('runtime_masked').format(count=masked) if masked else '')+(' | RAW' if mode=='full' else ''))
+        self.detail.setToolTip(self.ui('runtime_raw_warning') if mode=='full' else self.ui('runtime_masked_warning'))
     def start_tool(self,title,work):
-        if self.tool_busy:return self.error('Another local tool is running')
+        if self.tool_busy:return self.error(self.ui('result_tool_busy'))
         self.tool_busy=True;self.detail.setText(title+'…')
         def worker():
             try:self.signals.toolDone.emit(title,privacy.protect_packet(work()),None)
@@ -1302,21 +1313,21 @@ class App(QMainWindow):
         self.detail.setText(title+' ready — local only')
         text=json.dumps(result,ensure_ascii=False,indent=2,allow_nan=False)
         d=QDialog(QApplication.activeModalWidget() or self);d.setWindowTitle(title);d.resize(850,580);l=QVBoxLayout(d)
-        l.addWidget(QLabel('Best-effort masking applied. Review before copying or saving; no automatic sharing.'))
+        l.addWidget(QLabel(self.ui('result_mask')))
         ed=QPlainTextEdit(text);ed.setReadOnly(True);ed.setProperty('role','code');l.addWidget(ed,1)
-        row=QHBoxLayout();self.btn(row,'Copy JSON',lambda:QApplication.clipboard().setText(text))
+        row=QHBoxLayout();self.btn(row,self.ui('result_copy_json'),lambda:QApplication.clipboard().setText(text))
         def save():
-            path,_=QFileDialog.getSaveFileName(d,'Save local JSON',str(ROOT/'relay-export.json'),'JSON (*.json)')
+            path,_=QFileDialog.getSaveFileName(d,self.ui('result_save_local'),str(ROOT/'relay-export.json'),'JSON (*.json)')
             if path:
                 try:atomic_text(pathlib.Path(path),text+'\n')
                 except OSError as e:self.error(e)
-        self.btn(row,'Save JSON…',save);row.addStretch();self.btn(row,'Close',d.accept);l.addLayout(row);d.exec()
+        self.btn(row,self.ui('result_save_json'),save);row.addStretch();self.btn(row,self.ui('result_close'),d.accept);l.addLayout(row);d.exec()
     def profiles(self):
         if self.running:return
         stored=self.settings.get('workspace_profiles',{})
         if not isinstance(stored,dict):stored={}
         profiles={str(k):v for k,v in stored.items() if isinstance(v,str)}
-        d=QDialog(self);d.setWindowTitle('Workspace profiles');d.resize(560,350);l=QVBoxLayout(d);items=QListWidget();l.addWidget(items,1)
+        d=QDialog(self);d.setWindowTitle(self.ui('runtime_profiles'));d.resize(560,350);l=QVBoxLayout(d);items=QListWidget();l.addWidget(items,1)
         def fill():
             items.clear()
             for name,path in sorted(profiles.items()):
@@ -1327,30 +1338,30 @@ class App(QMainWindow):
             except OSError as e:self.error(e)
         def add():
             path=self.cwd.text()
-            if not pathlib.Path(path).is_dir():return self.error('Select an existing workspace first')
-            name,ok=QInputDialog.getText(d,'Save current workspace','Profile name')
+            if not pathlib.Path(path).is_dir():return self.error(self.ui('runtime_profile_existing'))
+            name,ok=QInputDialog.getText(d,self.ui('runtime_profile_save'),self.ui('runtime_profile_name'))
             if ok and name.strip():
                 name=name.strip()
                 if name in profiles and profiles[name]!=path:
-                    if QMessageBox.question(d,'Replace profile?',name)!=QMessageBox.StandardButton.Yes:return
+                    if QMessageBox.question(d,self.ui('runtime_profile_replace'),name)!=QMessageBox.StandardButton.Yes:return
                 profiles[name]=path;persist();fill()
         def use():
             item=items.currentItem()
             if item:
                 path=profiles[item.data(Qt.ItemDataRole.UserRole)]
-                if not pathlib.Path(path).is_dir():return self.error('Workspace no longer exists')
+                if not pathlib.Path(path).is_dir():return self.error(self.ui('runtime_profile_missing'))
                 self.cwd.setText(path);persist();d.accept()
         def remove():
             item=items.currentItem()
             if item:profiles.pop(item.data(Qt.ItemDataRole.UserRole),None);persist();fill()
-        row=QHBoxLayout();self.btn(row,'Save current',add);self.btn(row,'Use selected',use);self.btn(row,'Remove profile',remove);l.addLayout(row);items.itemDoubleClicked.connect(lambda _:use());fill();d.exec()
+        row=QHBoxLayout();self.btn(row,self.ui('runtime_profile_save_current'),add);self.btn(row,self.ui('runtime_profile_use'),use);self.btn(row,self.ui('runtime_profile_remove'),remove);l.addLayout(row);items.itemDoubleClicked.connect(lambda _:use());fill();d.exec()
     def project_context(self):
         cwd=self.cwd.text()
-        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
+        if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
         self.start_tool('Project context',lambda:{'schema':'command-relay/project-context-v1','workspace':cwd,**intelligence.project_snapshot(cwd)})
     def language_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error('Finish the active operation first')
+            return self.error(self.ui('runtime_active_operation'))
         language = choose_language(saved_language(self.settings), self)
         if language is None or language == saved_language(self.settings):
             return
@@ -1363,7 +1374,7 @@ class App(QMainWindow):
 
     def mode_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error('Finish the active operation first')
+            return self.error(self.ui('runtime_active_operation'))
         mode = choose_workspace_mode(self.mode, self, self.ui_language,
                                      self.motion_action.isChecked())
         if mode is None or mode == self.mode:
@@ -1377,14 +1388,14 @@ class App(QMainWindow):
 
     def safety_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error('Finish the active operation first')
+            return self.error(self.ui('runtime_active_operation'))
         dialog = SafetyDialog(self.cwd.text(), self)
         dialog.refresh()
         dialog.exec()
 
     def updates_settings(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error('Finish the active operation first')
+            return self.error(self.ui('runtime_active_operation'))
         dialog = UpdatesDialog(self)
         result = dialog.exec()
         handoff = dialog.handoff if result == QDialog.DialogCode.Accepted else None
@@ -1397,19 +1408,19 @@ class App(QMainWindow):
 
     def github_prs(self):
         if self.running or self.tool_busy or self.copy_busy or self.stop_inflight:
-            return self.error('Finish the active operation first')
+            return self.error(self.ui('runtime_active_operation'))
         from .relay_github_qt import GitHubDialog
-        dialog = GitHubDialog(self.cwd.text(), self)
+        dialog = GitHubDialog(self.cwd.text(), self, language=self.ui_language)
         dialog.detect_repo()
         dialog.exec()
 
     def dashboard(self):
         cwd=self.cwd.text()
-        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
+        if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
         self.start_tool('Git dashboard',lambda:features.git_dashboard(cwd))
     def ai_context(self):
         cwd=self.cwd.text()
-        if not pathlib.Path(cwd).is_dir():return self.error('Select a valid workspace')
+        if not pathlib.Path(cwd).is_dir():return self.error(self.ui('runtime_valid_workspace'))
         d=QDialog(self);d.setWindowTitle('AI context — selected data');d.resize(620,350);l=QVBoxLayout(d)
         l.addWidget(QLabel('Select text files within the workspace. Review all content for secrets before sharing.'))
         files=QListWidget();l.addWidget(files,1);diff=QCheckBox('Include staged and unstaged Git diff');l.addWidget(diff)
@@ -1426,14 +1437,14 @@ class App(QMainWindow):
             selected=tuple(paths);include=diff.isChecked();self.start_tool('AI context',lambda:features.context_packet(cwd,selected,include))
     def queue_dialog(self):
         if self.running:return
-        d=QDialog(self);d.setWindowTitle('Task queue — manual');d.resize(650,380);l=QVBoxLayout(d)
-        l.addWidget(QLabel('Session queue only. Loading a task never runs it or changes workspace.'))
+        d=QDialog(self);d.setWindowTitle(self.ui('result_queue'));d.resize(650,380);l=QVBoxLayout(d)
+        l.addWidget(QLabel(self.ui('result_queue_notice')))
         items=QListWidget();l.addWidget(items,1)
         def fill():
             items.clear()
             for name,data,task in self.task_queue:items.addItem(name+'  |  '+(task.get('task_id') or task.get('title') or 'script'))
         def add():
-            files,_=QFileDialog.getOpenFileNames(d,'Add tasks','','Commands (*.txt *.ps1 *.md *.json)')
+            files,_=QFileDialog.getOpenFileNames(d,self.ui('result_add_tasks'),'','Commands (*.txt *.ps1 *.md *.json)')
             for path in files:
                 try:
                     data=features.read_bounded(path,PACKET_LIMIT);script,task=load_input(data)
@@ -1445,79 +1456,190 @@ class App(QMainWindow):
         def load():
             i=items.currentRow()
             if i>=0:
-                if self.editor.toPlainText().strip() and QMessageBox.question(d,'Replace editor?','Load selected task into editor?')!=QMessageBox.StandardButton.Yes:return
+                if self.editor.toPlainText().strip() and QMessageBox.question(d,self.ui('result_replace'),self.ui('result_load_question'))!=QMessageBox.StandardButton.Yes:return
                 name,data,task=self.task_queue[i];self.import_data(data,name,sha(data));self.task_queue.pop(i);d.accept()
         def remove():
             i=items.currentRow()
             if i>=0:self.task_queue.pop(i);fill()
-        row=QHBoxLayout();self.btn(row,'Add tasks…',add);self.btn(row,'Load selected',load);self.btn(row,'Remove',remove);row.addStretch();self.btn(row,'Close',d.accept);l.addLayout(row);fill();d.exec()
+        row=QHBoxLayout();self.btn(row,self.ui('result_add_tasks_button'),add);self.btn(row,self.ui('result_load_selected'),load);self.btn(row,self.ui('result_remove'),remove);row.addStretch();self.btn(row,self.ui('result_close'),d.accept);l.addLayout(row);fill();d.exec()
     def latest_metrics(self):
-        if self.running or not self.current:return self.error('Choose a completed report')
+        if self.running or not self.current:return self.error(self.ui('result_completed'))
         self.show_metrics(self.current)
-    def show_metrics(self,path):self.start_tool('Observed metrics',lambda:features.metrics_for(path))
+    def show_metrics(self,path):self.start_tool(self.ui('result_metrics'),lambda:features.metrics_for(path))
     def compare_selected_metrics(self,paths):
-        if len(paths)!=2:return self.error('Select two reports')
-        a,b=sorted(paths);self.start_tool('Compare metrics (old → new)',lambda:features.compare_metrics(a,b))
+        if len(paths)!=2:return self.error(self.ui('result_two_reports'))
+        a,b=sorted(paths);self.start_tool(self.ui('result_compare_metrics_title'),lambda:features.compare_metrics(a,b))
     def export_evidence(self,paths):
-        if not paths:return self.error('Select reports to export')
-        dest,_=QFileDialog.getSaveFileName(self,'Export selected reports',str(ROOT/('evidence-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'.zip')),'ZIP (*.zip)')
+        if not paths:return self.error(self.ui('result_select_export'))
+        dest,_=QFileDialog.getSaveFileName(self,self.ui('result_export_reports'),str(ROOT/('evidence-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'.zip')),'ZIP (*.zip)')
         if dest:
-            selected=tuple(paths);self.start_tool('Evidence bundle',lambda:features.evidence_bundle(selected,dest))
+            selected=tuple(paths);self.start_tool(self.ui('result_evidence'),lambda:features.evidence_bundle(selected,dest))
     def history(self):
-        dlg=QDialog(self);dlg.setWindowTitle('Run history');dlg.resize(940,580);l=QVBoxLayout(dlg);r=QHBoxLayout();q=QLineEdit();q.setPlaceholderText('Search history');r.addWidget(q,1);flt=QComboBox();flt.addItems(['All','Exit 0','Failed','Cancelled','Partial / unknown']);r.addWidget(flt);l.addLayout(r);table=QTableWidget(0,4);table.setHorizontalHeaderLabels(['Started','Command','Process status','Elapsed']);table.verticalHeader().hide();table.setColumnWidth(0,180);table.setColumnWidth(2,110);table.setColumnWidth(3,85);table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch);table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows);table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection);table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers);l.addWidget(table,1)
-        paths=[];snapshot=[];token=object();loading=False;closed=False
-        status_label=QLabel('Loading history…');status_row=QHBoxLayout();status_row.addWidget(status_label,1);self.btn(status_row,'Review workspace session…',self.review_session_context);l.addLayout(status_row)
-        def fill():
-            table.setUpdatesEnabled(False)
+        dlg=QDialog(self);dlg.setWindowTitle(self.ui('result_history'));dlg.resize(920,620)
+        l=QVBoxLayout(dlg);l.setSpacing(10)
+        r=QHBoxLayout();q=QLineEdit();q.setObjectName('historySearch');q.setPlaceholderText(self.ui('history_search'));q.setAccessibleName(self.ui('history_search'));r.addWidget(q,1)
+        flt=QComboBox();flt.setAccessibleName(self.ui('result_process_status'))
+        flt.addItems([self.ui('history_all_runs')]+[self.ui('result_filter_'+str(i)) for i in range(1,5)])
+        for i,key in enumerate(('All','Exit 0','Failed','Cancelled','Partial / unknown')):flt.setItemData(i,key)
+        r.addWidget(flt);refresh=self.btn(r,self.ui('result_refresh'),lambda:reload());l.addLayout(r)
+        table=QTableWidget(0,4);table.setObjectName('historyRuns');table.setAccessibleName(self.ui('result_history'))
+        table.setHorizontalHeaderLabels([self.ui('history_time'),self.ui('history_task'),self.ui('result_process_status'),self.ui('history_duration')]);table.verticalHeader().hide()
+        table.setColumnWidth(0,92);table.setColumnWidth(2,145);table.setColumnWidth(3,100)
+        table.horizontalHeader().setSectionResizeMode(1,QHeaderView.ResizeMode.Stretch)
+        table.setColumnHidden(3,self.mode=='casual');table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection);table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        l.addWidget(table,1)
+        page_row=QHBoxLayout();page_row.addStretch()
+        more_runs=self.btn(page_row,self.ui('history_show_more'),lambda:show_more())
+        more_runs.setObjectName('historyShowMore');more_runs.hide();l.addLayout(page_row)
+        visible_limit=view.HISTORY_PAGE_SIZE
+        paths={};snapshot=[];metadata={};token=object();detail_token=object();loading=False;closed=False;filling=False;detail_busy=False;desired=None;loaded_detail=None;revision=0;unreadable=0;limited=False;load_error=False
+        status_label=QLabel(self.ui('result_loading'));status_label.setWordWrap(True);status_label.setProperty('role','muted');l.addWidget(status_label)
+        def plain(name,role=None):
+            label=QLabel();label.setObjectName(name);label.setTextFormat(Qt.TextFormat.PlainText);label.setWordWrap(True)
+            if role:label.setProperty('role',role)
+            return label
+        heading=plain('historyHeading','casualTitle');heading.setText(self.ui('history_details'));l.addWidget(heading)
+        details=plain('historyDetails');details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse);l.addWidget(details)
+        verdict=plain('historyAssertions');l.addWidget(verdict)
+        hint=plain('historyHint','muted');l.addWidget(hint)
+        def status_text(status):
+            if status=='Exit 0':return self.ui('history_exit_zero')
+            if status=='Cancelled':return self.ui('history_cancelled')
+            if status=='Partial':return self.ui('history_partial')
+            if status in ('Unknown','Exit None'):return self.ui('history_unknown')
+            if status.startswith('Exit '):return self.ui('history_exit').format(code=view.history_text(status[5:],40))
+            return self.ui('history_unknown')
+        def selected():return [paths[i.row()] for i in table.selectionModel().selectedRows() if i.row() in paths]
+        def one(fn):
+            a=selected()
+            if len(a)==1:fn(a[0])
+        def compare():
+            a=sorted(selected())
+            if len(a)!=2:return
             try:
-                table.setRowCount(0);paths.clear()
-                kind=flt.currentText();query=q.text().lower()
-                matches=[]
-                for p,(date,name,status,duration,workspace,tag) in snapshot:
-                    hay=' '.join((p.name,date,name,status,workspace)).lower()
-                    if query not in hay or (kind=='Exit 0' and status!='Exit 0') or (kind=='Failed' and tag!='error') or (kind=='Cancelled' and status!='Cancelled') or (kind=='Partial / unknown' and status not in ('Partial','Unknown','Exit None')):continue
-                    matches.append((p,date,name,status,duration,tag))
-                table.setRowCount(len(matches))
-                for row,(p,date,name,status,duration,tag) in enumerate(matches):
-                    paths.append(p)
-                    for i,val in enumerate((date,name,status,duration)):
-                        item=QTableWidgetItem(val);table.setItem(row,i,item)
-                        if i==2:item.setForeground(QColor(colors()[tag]))
-            finally:table.setUpdatesEnabled(True)
-        def loaded(key,result,error):
-            nonlocal loading
-            if closed or key is not token:return
-            loading=False;refresh.setEnabled(True)
-            if error:status_label.setText('History could not be read; use Refresh or Reports > Folder.');return
-            rows,unreadable,limited=result;snapshot[:]=rows;fill()
-            status_label.setText(f'{len(rows)} reports'+(f' | {unreadable} unreadable' if unreadable else '')+(' | Limited history; older files remain in Reports folder.' if limited else ''))
-        def reload():
-            nonlocal loading
-            if loading:return
-            loading=True;refresh.setEnabled(False);status_label.setText('Loading history…')
+                if any(p.stat().st_size>4_000_000 for p in a):return self.error(self.ui('result_large_report'))
+                texts=[compact_report(p.read_text(encoding='utf-8',errors='replace')).splitlines() for p in a]
+                if any(len(x)>10000 for x in texts):return self.error(self.ui('result_too_many'))
+                diff='\n'.join(difflib.unified_diff(*texts,fromfile=a[0].name,tofile=a[1].name,lineterm=''));d=QDialog(dlg);d.setWindowTitle(self.ui('history_compare'));d.resize(950,600);ll=QVBoxLayout(d);ed=QPlainTextEdit(diff or self.ui('result_no_diff'));ed.setReadOnly(True);ed.setFont(QFont('Consolas',10));ll.addWidget(ed);d.exec()
+            except OSError as e:self.error(e)
+        def copy_raw():
+            a=selected()
+            if len(a)!=1:return
+            if QMessageBox.question(dlg,self.ui('history_raw_title'),self.ui('history_raw_question'),QMessageBox.StandardButton.Yes|QMessageBox.StandardButton.No,QMessageBox.StandardButton.No)==QMessageBox.StandardButton.Yes:self.copy_report('full',a[0])
+        r=QHBoxLayout();open_btn=self.btn(r,self.ui('history_open'),lambda:one(self.open_path));open_btn.setObjectName('historyOpen')
+        copy_btn=self.btn(r,self.ui('history_copy'),lambda:one(lambda p:self.copy_report('ai',p)));copy_btn.setObjectName('historyCopy');copy_btn.setToolTip(self.ui('runtime_masked_warning'))
+        compare_btn=self.btn(r,self.ui('history_compare'),compare);compare_btn.setObjectName('historyCompare')
+        r.addStretch();more=QPushButton(self.ui('history_more'));more.setObjectName('historyMore');menu=QMenu(more);more.setMenu(menu);r.addWidget(more)
+        def action(key,fn):
+            a=menu.addAction(self.ui(key));a.triggered.connect(lambda checked=False:fn());return a
+        compact_action=action('copy_compact',lambda:one(lambda p:self.copy_report('compact',p)))
+        raw_action=action('copy_raw',copy_raw);menu.addSeparator()
+        stats_action=action('history_stats',lambda:one(self.show_metrics));compare_stats_action=action('history_compare_stats',lambda:self.compare_selected_metrics(selected()))
+        export_action=action('history_export',lambda:self.export_evidence(selected()));menu.addSeparator()
+        action('history_session',self.review_session_context);action('history_folder',lambda:self.open_path(REPORTS))
+        self.btn(r,self.ui('result_close'),dlg.accept);l.addLayout(r)
+        def paint_verdict(result):
+            if result is None:verdict.setText(self.ui('history_assert_unavailable'));return
+            state,passed,total=result
+            if state=='NOT_REQUESTED':text=self.ui('history_assert_none')
+            elif state=='LIMITED':text=self.ui('history_assert_limited')
+            else:text=self.ui('history_assert_status').format(status=state,passed=passed,total=total)
+            verdict.setText(text)
+        def request_detail():
+            nonlocal detail_busy,loaded_detail
+            if closed or detail_busy or desired is None:return
+            path=desired;generation=revision;detail_busy=True
             def work():
-                try:result=view.history_snapshot(REPORTS);error=None
+                try:result=view.history_assertions(path)
+                except Exception:result=None
+                try:self.signals.historyDone.emit(detail_token,(path,generation,result),None)
+                except RuntimeError:pass
+            threading.Thread(target=work,daemon=True).start()
+        def selection_changed():
+            nonlocal desired,loaded_detail
+            if filling or closed:return
+            a=selected();count=len(a);single=count==1
+            for button in (open_btn,copy_btn):button.setEnabled(single);button.setVisible(count<2)
+            compare_btn.setVisible(count==2);compare_btn.setEnabled(count==2)
+            for item in (compact_action,raw_action,stats_action):item.setEnabled(single)
+            compare_stats_action.setVisible(count==2);compare_stats_action.setEnabled(count==2);export_action.setEnabled(count>0)
+            next_path=a[0] if single else None
+            if next_path!=desired:desired=next_path;loaded_detail=None
+            if single:
+                path=a[0];row=metadata[path];date,name,status,duration,workspace,tag,title,task_id=row
+                heading.setText(view.history_title(path,row));details.setText(self.ui('history_detail').format(status=status_text(status),duration=duration,date=view.history_text(date),task=view.history_text(task_id) or '—',workspace=view.history_text(workspace,500) or '—',report=path.name))
+                hint.setText(self.ui('history_assert_note'))
+                if loaded_detail is not None and loaded_detail[0]==path:paint_verdict(loaded_detail[1])
+                else:verdict.setText(self.ui('history_assert_loading'));request_detail()
+            else:
+                heading.setText(self.ui('history_details'));details.setText(self.ui('history_selected').format(count=count) if count else self.ui('history_no_selection'));verdict.clear();hint.setText(self.ui('history_select_two'))
+        def fill():
+            nonlocal filling
+            old=set(selected());filling=True;table.setUpdatesEnabled(False)
+            try:
+                table.clearSpans();table.setRowCount(0);paths.clear()
+                matches,match_count=view.history_page(snapshot,q.text(),flt.currentData(),visible_limit)
+                more_runs.setVisible(len(matches)<match_count);more_runs.setEnabled(not loading and len(matches)<match_count)
+                groups=[];last=None
+                for p,row in matches:
+                    day=row[0].split(' ',1)[0]
+                    if day!=last:groups.append((None,day));last=day
+                    groups.append((p,row))
+                table.setRowCount(len(groups))
+                for i,(p,row) in enumerate(groups):
+                    if p is None:
+                        item=QTableWidgetItem(view.history_text(row));item.setFlags(Qt.ItemFlag.ItemIsEnabled);font=item.font();font.setBold(True);item.setFont(font);item.setForeground(QColor(colors()['muted']));table.setItem(i,0,item);table.setSpan(i,0,1,4);continue
+                    paths[i]=p;date,name,status,duration,workspace,tag,title,task_id=row
+                    for col,value in enumerate((date.partition(' ')[2] or date,view.history_title(p,row),status_text(status),duration)):
+                        item=QTableWidgetItem(view.history_text(value));table.setItem(i,col,item)
+                        if col==2:item.setForeground(QColor(colors()[tag] if tag!='success' else colors()['text']))
+                from PySide6.QtCore import QItemSelectionModel
+                for i,p in paths.items():
+                    if p in old:table.selectionModel().select(table.model().index(i,0),QItemSelectionModel.SelectionFlag.Select|QItemSelectionModel.SelectionFlag.Rows)
+                if not selected() and paths and not old:table.selectRow(next(iter(paths)))
+                text=self.ui('history_page_count').format(shown=len(matches),matched=match_count,total=len(snapshot)) if matches else self.ui('history_empty')
+                if unreadable:text+=self.ui('result_unreadable').format(count=unreadable)
+                if limited:text+=self.ui('result_limited')
+                if not loading and not load_error:status_label.setText(text)
+            finally:filling=False;table.setUpdatesEnabled(True)
+            selection_changed()
+        def show_more():
+            nonlocal visible_limit
+            if loading:return
+            visible_limit+=view.HISTORY_PAGE_SIZE
+            fill()
+        def filter_changed():
+            nonlocal visible_limit
+            visible_limit=view.HISTORY_PAGE_SIZE
+            filter_timer.start()
+        def loaded(key,result,error):
+            nonlocal loading,detail_busy,loaded_detail,revision,unreadable,limited,load_error,visible_limit
+            if closed:return
+            if key is detail_token:
+                detail_busy=False;path,generation,data=result
+                if path==desired and generation==revision:loaded_detail=(path,data);paint_verdict(data)
+                else:request_detail()
+                return
+            if key is not token:return
+            loading=False;refresh.setEnabled(True);load_error=bool(error)
+            if error:
+                status_label.setText(self.ui('result_read_error'));more_runs.setEnabled(not more_runs.isHidden());return
+            rows,unreadable,limited=result;snapshot[:]=rows;metadata.clear();metadata.update(rows);revision+=1;loaded_detail=None;visible_limit=view.HISTORY_PAGE_SIZE;fill()
+        def reload():
+            nonlocal loading,load_error
+            if loading:return
+            loading=True;load_error=False;refresh.setEnabled(False);more_runs.setEnabled(False);status_label.setText(self.ui('result_loading'))
+            def work():
+                try:result=view.history_snapshot(REPORTS,include_identity=True);error=None
                 except Exception:result=None;error=True
                 try:self.signals.historyDone.emit(token,result,error)
                 except RuntimeError:pass
             threading.Thread(target=work,daemon=True).start()
         self.signals.historyDone.connect(loaded,Qt.ConnectionType.QueuedConnection)
-        filter_timer=QTimer(dlg);filter_timer.setSingleShot(True);filter_timer.setInterval(120);filter_timer.timeout.connect(fill)
-        def selected():return [paths[i.row()] for i in table.selectionModel().selectedRows()]
-        def one(fn):
-            a=selected()
-            if len(a)!=1:return self.error('Select one report')
-            fn(a[0])
-        def compare():
-            a=sorted(selected())
-            if len(a)!=2:return self.error('Select two reports')
-            try:
-                if any(p.stat().st_size>4_000_000 for p in a):return self.error('Large report: use external diff viewer')
-                texts=[compact_report(p.read_text(encoding='utf-8',errors='replace')).splitlines() for p in a]
-                if any(len(x)>10000 for x in texts):return self.error('Too many compact lines for inline comparison')
-                diff='\n'.join(difflib.unified_diff(*texts,fromfile=a[0].name,tofile=a[1].name,lineterm=''));d=QDialog(dlg);d.setWindowTitle('Compact comparison');d.resize(950,600);ll=QVBoxLayout(d);ed=QPlainTextEdit(diff or 'No differences');ed.setReadOnly(True);ed.setFont(QFont('Consolas',10));ll.addWidget(ed);d.exec()
-            except OSError as e:self.error(e)
-        r=QHBoxLayout();self.btn(r,'View full',lambda:one(self.open_path));self.btn(r,'Compare 2',compare);self.copy_button(r,lambda mode:one(lambda p:self.copy_report(mode,p)));self.btn(r,'Metrics',lambda:one(self.show_metrics));self.btn(r,'Compare metrics',lambda:self.compare_selected_metrics(selected()));self.btn(r,'Export ZIP',lambda:self.export_evidence(selected()));r.addStretch();refresh=self.btn(r,'Refresh',reload);l.addLayout(r);q.textChanged.connect(lambda _:filter_timer.start());flt.currentTextChanged.connect(lambda _:filter_timer.start());table.cellDoubleClicked.connect(lambda *_:one(self.open_path));reload()
+        filter_timer=QTimer(dlg);filter_timer.setObjectName('historyFilterTimer');filter_timer.setSingleShot(True);filter_timer.setInterval(120);filter_timer.timeout.connect(fill)
+        q.textChanged.connect(lambda _:filter_changed());flt.currentIndexChanged.connect(lambda _:filter_changed());table.itemSelectionChanged.connect(selection_changed);table.cellDoubleClicked.connect(lambda row,col: self.open_path(paths[row]) if row in paths else None)
+        selection_changed();reload()
         try:dlg.exec()
         finally:
             closed=True;self.signals.historyDone.disconnect(loaded);filter_timer.stop()
