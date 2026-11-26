@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — 4.4.0 Unified Experience Update
+## 4.4.0 Unified Experience Update
 
 - One full-width workbench with top navigation, a resizable command editor and terminal, and optional bottom utilities. Ordinary manual Run needs no second confirmation; high-risk and failed/uncertain repeat review remains.
 - Reviewed dependency-aware task batches: explicit workspaces, sequential by default, opt-in bounded parallel workers for independent tasks. No sandbox or unattended arbitrary PowerShell.
@@ -10,7 +10,7 @@
 - 17 selectable interface languages: English/Russian and 15 translation previews; Arabic RTL chrome, LTR commands, paths and reports. Preview translations are not independently certified.
 - One-use exact Safety Gate review, separate scoped Git/update grants, no implicit authority on import.
 - Automated Grand QA: 479/479 Windows and Linux, no skips; 17-language offscreen scale matrix, sampled fonts, native disposable batch, loopback browser and deterministic unsigned 39-file archive. Actual native visual/DPI, authenticated provider, independent linguistic/legal review and production signed-to-signed update remain unverified.
-- No new mandatory dependencies or managed release paths. The runtime version remains 4.3.0 until release preparation.
+- No new mandatory dependencies or managed release paths.
 
 ## 4.3.0 — Automatic Updates
 

@@ -50,7 +50,7 @@ assert relay_core.ROOT.samefile(Path.cwd()), (relay_core.ROOT, Path.cwd())
 assert relay_core.ASSETS.joinpath('relay-icon.png').is_file()
 assert disclaimer_text(relay_core.ROOT)
 assert relay_core.load_input(Path('examples/example-ai-task.json').read_bytes())[1]['task_id'] == 'relay-qt-smoke-40'
-assert VERSION == '4.3.0'
+assert VERSION == '4.4.0'
 '''
             proc = subprocess.run([sys.executable, '-c', code], cwd=extracted,
                                   capture_output=True, text=True, timeout=15)

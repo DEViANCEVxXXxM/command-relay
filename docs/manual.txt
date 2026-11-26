@@ -1,5 +1,4 @@
-COMMAND RELAY — 4.4.0 UNIFIED EXPERIENCE CANDIDATE
-Runtime version remains 4.3.0 until release preparation.
+COMMAND RELAY 4.4.0 — UNIFIED EXPERIENCE UPDATE
 Compatible with existing task-v1, result-v1 and session-v1 packets. See README.md and CHANGELOG.md.
 
 LICENSE AND EXECUTION RISKS
@@ -273,7 +272,7 @@ requested Copy finishes to avoid confusing report ownership. The app does
 not copy automatically. No new dependencies, network actions or mandatory
 controls. The optional Browser Bridge is described below.
 
-4.4 CANDIDATE FEATURES AND LIMITS
+4.4.0 FEATURES AND LIMITS
 Queue > Task batches reviews command-relay/batch-v1 dependencies and workspaces.
 Sequential is default; parallelism is opt-in for independent, distinct,
 non-overlapping roots. Each task retains its own report and declared assertions.

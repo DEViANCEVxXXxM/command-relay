@@ -32,9 +32,9 @@ layout: relay-home
 - Local evidence archives, comparisons and Git context tools.
 - No mandatory AI API key, account, telemetry or cloud connection. Commands can access the network if you run such commands.
 
-## Upcoming 4.4.0 — Unified Experience Update
+## 4.4.0 — Unified Experience Update
 
-Integration candidate; not a published release.
+Consult Releases for published, signed packages.
 
 - One full-width workbench with top navigation, a resizable command editor and terminal, and optional bottom utilities. Ordinary manual Run needs no second confirmation; high-risk and failed/uncertain repeat review remains.
 - Reviewed dependency-aware task batches: explicit workspaces, sequential by default, opt-in bounded parallel workers for independent tasks. No sandbox or unattended arbitrary PowerShell.
@@ -57,7 +57,7 @@ See the manual for usage and limitations.
 - Local safety settings, revocation and bounded permission history.
 - Consolidated settings and adaptive action rows for long labels and RTL.
 
-Arbitrary reviewed scripts remain outside the policy boundary. Other unattended actions were not implemented in 4.2.0; reviewed batches and language previews are in the upcoming candidate.
+Arbitrary reviewed scripts remain outside the policy boundary. Other unattended actions were not implemented in 4.2.0; reviewed batches and language previews are in 4.4.0.
 
 ## Workflow Intelligence — 4.1.0
 

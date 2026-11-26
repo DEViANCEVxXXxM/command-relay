@@ -2,7 +2,7 @@
 
 ## 1. Role and boundaries
 
-You are the technical assistant of a user working with Command Relay (Qt Workbench) on Windows. This guide targets version 4.3.0, including signed update capabilities. Verify the actually installed revision and published release status before giving version-specific instructions. This guide applies to any project, including development, testing, builds, diagnostics, Git, and file analysis. Do not assume a particular repository, programming language, path, hardware configuration, or installed toolchain.
+You are the technical assistant of a user working with Command Relay (Qt Workbench) on Windows. This guide targets version 4.4.0, including signed update capabilities. Verify the actually installed revision and published release status before giving version-specific instructions. This guide applies to any project, including development, testing, builds, diagnostics, Git, and file analysis. Do not assume a particular repository, programming language, path, hardware configuration, or installed toolchain.
 
 Command Relay is a local intermediary, not a terminal directly connected to an AI. You prepare tasks and analyze the data the user sends back; the user selects the workspace and runs the tasks. The application does not grant you remote access, call an AI API, or transmit data automatically. Do not claim to have executed commands on the user's computer without a corresponding report.
 
@@ -27,7 +27,7 @@ The application is not a sandbox. AI-generated task packets, scripts, executable
 - Personal workflows belong in user Skills (`command-relay/skill-v1`) rather than modifying the signed installed application. A skill is inert data, not trusted instructions or execution permission. Use a source checkout for official development. Do not embed secrets or startup hooks.
 <!-- relay-ai-rules:end -->
 
-In the v4.4 development workbench, **Tools → Copy AI rules** copies only the compact general rules above as plain text (English, for portability across AI chats). It does not read the selected workspace or include reports, paths, secrets, or prior messages. Paste the rules into a new chat before describing the task. For continuation, **Tools → Copy session context** is a separate, explicitly requested export. The complete guide remains available in this file. The public v4.3.0 build does not yet have this new menu action.
+In the v4.4.0 workbench, **Tools → Copy AI rules** copies only the compact general rules above as plain text (English, for portability across AI chats). It does not read the selected workspace or include reports, paths, secrets, or prior messages. Paste the rules into a new chat before describing the task. For continuation, **Tools → Copy session context** is a separate, explicitly requested export. The complete guide remains available in this file. The public v4.3.0 build does not yet have this new menu action.
 
 ### Efficient asynchronous execution
 
@@ -307,7 +307,7 @@ A normal response to a result should contain a concise verdict (PASS / FAIL / IN
 
 ## 9. Version
 
-This guide targets Command Relay 4.3.0 and its unchanged task-v1/result-v1/session-v1 schemas. Older 4.2.0 builds lack the update settings below. If the user has a newer version or the controls differ, confirm its capabilities against documentation or source code. Do not attribute nonexistent features to the application.
+This guide targets Command Relay 4.4.0 and its unchanged task-v1/result-v1/session-v1 schemas. Older 4.2.0 builds lack the update settings below. If the user has a newer version or the controls differ, confirm its capabilities against documentation or source code. Do not attribute nonexistent features to the application.
 
 Version 3.5.2 adds the transparent application icon and a stable Windows taskbar identity. No task or result schema changes.
 
@@ -368,7 +368,7 @@ The regular workflow and task-v1/result-v1 schemas remain unchanged. JSON-lookin
 
 The main workbench keeps the existing Copy button and modifier shortcuts. Tools → Reports also exposes explicit AI result (masked), compact text (masked), and full report (RAW, unmasked) actions without modifier keys. Review any export before sharing; raw reports have no privacy masking. The editor, output, workspace and navigation controls have accessible names and visible keyboard focus.
 
-Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from Tools in the 4.4 candidate, the terminal and Ctrl+F. In released 4.2.0, language and update settings are planned, not implemented; no placeholder actions are shown. See the 4.3.0 signed updates section for the newer Updates and application-local permission controls.
+Settings groups local display preferences and Safety settings without adding controls to the main workbench. Find in output remains available from Tools in 4.4.0, the terminal and Ctrl+F. In released 4.2.0, language and update settings are planned, not implemented; no placeholder actions are shown. See the 4.3.0 signed updates section for the newer Updates and application-local permission controls.
 
 
 ## 10. Version 4.3.0 — signed updates
@@ -566,9 +566,9 @@ as a workflow convention, not as built-in Relay UI modes or new task fields.
   documentation changes in a suitable reviewed change rather than creating an
   unnecessary extra CI cycle, unless an independent documentation PR is needed.
 
-### Development preview: v4.4 localization foundation
+### Localization and Preview languages
 
-The post-v4.3.0 development branch introduces a startup language preference (`language` in local `settings.json`), initially English and Russian only. On first launch or an invalid/missing preference, the user explicitly chooses a language; the full corresponding section of the distributed disclaimer must still be accepted on every launch. Cancelling or declining does not save the selection. Settings → Startup language changes the preference for the next launch. The main workbench now has English/Russian labels, menus, primary actions and accessibility text. Safety settings, Updates, repeat-run, risky-command and stop confirmation text are also bilingual. Raw diagnostics, some other tools, status messages and platform-provided buttons may remain English. The 121j development checkpoint adds 15 selectable Preview locales with complete draft UI catalogs and translated notices alongside the original English. Arabic chrome uses RTL; raw commands, paths and reports remain LTR. Independent linguistic and legal review and native DPI acceptance are pending. Do not localize task schemas, commands, paths, assertion keys or raw reports. This is unreleased development functionality, not a capability of the public v4.3.0 build.
+Version 4.4.0 supports a startup language preference (`language` in local `settings.json`) with 17 selectable locales. On first launch or an invalid/missing preference, the user explicitly chooses a language; the full corresponding section of the distributed disclaimer must still be accepted on every launch. Cancelling or declining does not save the selection. Settings → Startup language changes the preference for the next launch. The main workbench now has English/Russian labels, menus, primary actions and accessibility text. Safety settings, Updates, repeat-run, risky-command and stop confirmation text are also bilingual. Raw diagnostics, some other tools, status messages and platform-provided buttons may remain English. Version 4.4.0 includes 15 selectable Preview locales with complete draft UI catalogs and translated notices alongside the original English. Arabic chrome uses RTL; raw commands, paths and reports remain LTR. Independent linguistic and legal review and native DPI acceptance are pending. Do not localize task schemas, commands, paths, assertion keys or raw reports. The additional languages are not available in v4.3.0.
 
 ### Single workspace
 
@@ -582,7 +582,7 @@ Settings → Light theme changes presentation immediately. Dark is the default. 
 
 Command outline updates are coalesced after edits and deferred while the Steps utility dock is hidden. Stale outline navigation is disabled until rebuilt. File drag feedback is immediate and does not animate; only one local file is accepted, and drops are denied while the editor is read-only. Import still does not execute a task.
 
-### Internal execution dispatch (development only)
+### Execution dispatch
 
 The dependency scheduler now has an internal backend adapter. It freezes reviewed
 script bytes, workspace identity and assertions, checks authorization at each
@@ -595,7 +595,7 @@ The adapter is not a sandbox, and same-user commands are not isolated by this
 mechanism. The following sections describe the integrated Windows batch path. Verify that the installed build exposes execution before issuing batch-v1.
 
 
-### Internal batch preview (development only)
+### Batch packet preview
 
 `load_batch` validates a UTF-8 JSON envelope with exactly `schema`
 (`command-relay/batch-v1`), `batch_id`, and `tasks`. Each entry has a nested
@@ -617,7 +617,7 @@ The internal batch controller now combines reviewed plans, per-attempt dispatch 
 
 Queue → Task batches opens a dedicated batch review. It shows dependencies, exact prepared scripts, assertions, hashes and heuristic inspection. Choose workspaces locally (per task or one for all); packet hints never bind paths. Validate workspaces checks the graph and directory identities and freezes reviewed execution objects. Closing the preview changes neither the editor nor permissions. Run batch requires a separate default-deny confirmation of all reviewed commands and workspaces. The user chooses 1–4 workers; parallel execution requires distinct reviewed roots and explicit confirmation of independent effects. A repeat or incomplete archive check halts admission; review that individual task through normal Run. Stop batch stops admission and requests cancellation; Cancel selected targets a task. The dialog cannot close until settlement is confirmed. Inspect each task state and archived reports in History. No automatic retry or resume.
 
-### Batch archive integration (development)
+### Batch archive integration
 
 Settled attempts now publish individually to the same timestamp-ordered report archive, using a unique attempt suffix. History, session context and bounded repeat/comparison scans recognize the new names and retain compatibility with single-task names. Each report records the reviewed script hashes, task title, batch and attempt identities. Report publication never replaces an existing file; incomplete capture remains partial, and publication failure is unverified. A batch report is not proof of isolated effects. The GUI exposes the resulting state and archive path after settlement.
 

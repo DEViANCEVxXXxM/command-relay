@@ -54,7 +54,7 @@ Browser shutdown explicitly destroys the view/page before the off-record profile
 Smart export compacts only recognized verbose success runs after evaluating full-source assertions/comparison, preserves original report hashes and line accounting, and masks against the original source. Detailed masked export retains the previous bounded view. Runtime diagnostics scans a bounded number of archive entries and checks the current PATH without launching tools. Recovery hints never issue a retry or delete a partial report.
 
 
-### Workspace continuity and browser handoff (v4.4 development)
+### Workspace continuity and browser handoff (v4.4.0)
 
 Recent reports are available on the History tab of the on-demand bottom utility dock, derived on demand from the existing bounded workspace session archive. The archive is the durable source of truth. No scan is required at startup; stale workspace results are discarded.
 

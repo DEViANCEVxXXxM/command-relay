@@ -24,9 +24,9 @@ Command Relay bridges an AI chat and a local development workspace without grant
 - Local report archives and evidence ZIP exports; best-effort secret masking in protected exports.
 - No mandatory API key, account, telemetry or cloud connection. Commands may access the network if you explicitly run such commands.
 
-## Upcoming 4.4.0 — Unified Experience Update
+## 4.4.0 — Unified Experience Update
 
-This section describes the integration candidate, not an already published release. Consult Releases for available versions.
+This section describes version 4.4.0. Consult Releases for published, signed packages.
 
 - One full-width workbench with top navigation, a resizable command editor and terminal, and optional bottom utilities. Ordinary manual Run needs no second confirmation; high-risk and failed/uncertain repeat review remains.
 - Reviewed dependency-aware task batches: explicit workspaces, sequential by default, opt-in bounded parallel workers for independent tasks. No sandbox or unattended arbitrary PowerShell.
@@ -88,7 +88,7 @@ The portable ZIP includes Python source and launchers, not Python itself or a co
 
 ## Work with an AI chat
 
-Attach [the AI operating guide](docs/COMMAND_RELAY_AI_GUIDE.md) to your chat. Ask the assistant to produce `command-relay/task-v1` JSON, import it, review the commands, and send back `command-relay/result-v1` using Copy. In the 4.4 candidate, use **Tools → Copy session context** (More in 4.3) to resume in another chat.
+Attach [the AI operating guide](docs/COMMAND_RELAY_AI_GUIDE.md) to your chat. Ask the assistant to produce `command-relay/task-v1` JSON, import it, review the commands, and send back `command-relay/result-v1` using Copy. In 4.4.0, use **Tools → Copy session context** (More in 4.3) to resume in another chat.
 
 ## Safety and privacy
 
@@ -107,7 +107,7 @@ With PySide6 installed, run `python tools/smoke_qt.py` for GUI regressions with 
 
 ## Compatibility
 
-Version 4.3.0 builds on the package layout introduced in 4.0.3 (`command_relay/`, `docs/`, `examples/` and `tools/`). The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt). Do not copy automation grants into a new installation; review and explicitly enable a new grant if desired. Keep `automation-permissions.json` private.
+Version 4.4.0 builds on the package layout introduced in 4.0.3 (`command_relay/`, `docs/`, `examples/` and `tools/`). The `task-v1`, `result-v1` and `session-v1` schemas, example contents, startup acknowledgement and local data locations are unchanged. The root `Start.pyw` and `Start.cmd` launchers remain; diagnostic launch is now `tools/Start-Debug.cmd` (or `python -m command_relay` from the distribution root). Extract new releases into a new folder; do not overlay old versions. Move old `reports/`, `scripts/` and `settings.json` only after making a backup, as described in the [manual](docs/manual.txt). Do not copy automation grants into a new installation; review and explicitly enable a new grant if desired. Keep `automation-permissions.json` private.
 
 ## License
 
