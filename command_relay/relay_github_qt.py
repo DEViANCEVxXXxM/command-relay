@@ -7,6 +7,7 @@ import threading
 from PySide6.QtCore import QObject, Signal, Qt
 from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QHBoxLayout,
     QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QVBoxLayout)
+from .relay_terms import tr
 from .relay_github import GitHubClient, GitHubError, MergeUnknown, workspace_repo, status_packet
 
 
@@ -15,9 +16,10 @@ class _Signals(QObject):
 
 
 class GitHubDialog(QDialog):
-    def __init__(self, workspace, parent=None):
+    def __init__(self, workspace, parent=None, *, language="en"):
         super().__init__(parent)
-        self.setWindowTitle('GitHub pull requests')
+        self.language = language
+        self.setWindowTitle(self.ui('gh_title'))
         self.resize(820, 590)
         self.workspace = workspace
         self.busy = False
@@ -28,33 +30,36 @@ class GitHubDialog(QDialog):
         self.signals = _Signals(self)
         self.signals.done.connect(self.finished_work, Qt.ConnectionType.QueuedConnection)
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel('Optional GitHub CLI integration · no automatic writes'))
+        layout.addWidget(QLabel(self.ui('gh_intro')))
         row = QHBoxLayout()
-        row.addWidget(QLabel('Repository'))
+        row.addWidget(QLabel(self.ui('gh_repository')))
         self.repo = QLineEdit(); self.repo.setPlaceholderText('owner/repository'); self.repo.setMaxLength(140)
         row.addWidget(self.repo, 1)
-        self.detect = self.button(row, 'Use workspace origin', self.detect_repo)
-        self.refresh = self.button(row, 'Refresh open PRs', self.list_prs)
+        self.detect = self.button(row, self.ui('gh_origin'), self.detect_repo)
+        self.refresh = self.button(row, self.ui('gh_refresh'), self.list_prs)
         layout.addLayout(row)
-        row = QHBoxLayout(); row.addWidget(QLabel('Pull request'))
+        row = QHBoxLayout(); row.addWidget(QLabel(self.ui('gh_pull_request')))
         self.prs = QComboBox(); self.prs.setEditable(True); self.prs.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.prs.lineEdit().setPlaceholderText('Enter PR number or select from list')
+        self.prs.lineEdit().setPlaceholderText(self.ui('gh_number'))
         self.prs.lineEdit().setMaxLength(510); row.addWidget(self.prs, 1)
-        self.inspect_button = self.button(row, 'Inspect / refresh', self.inspect_pr)
+        self.inspect_button = self.button(row, self.ui('gh_inspect'), self.inspect_pr)
         layout.addLayout(row)
         self.detail = QPlainTextEdit(); self.detail.setReadOnly(True)
-        self.detail.setPlaceholderText('Select a repository and PR, then inspect its current status.')
+        self.detail.setPlaceholderText(self.ui('gh_detail'))
         layout.addWidget(self.detail, 1)
-        self.notice = QLabel('Ready to detect workspace origin.'); self.notice.setWordWrap(True)
+        self.notice = QLabel(self.ui('gh_ready')); self.notice.setWordWrap(True)
         self.notice.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.notice)
         row = QHBoxLayout()
-        self.merge_button = self.button(row, 'Squash and merge…', self.confirm_merge)
-        self.copy_button = self.button(row, 'Review / copy status', self.copy_status)
-        row.addStretch(1); self.close_button = self.button(row, 'Close', self.reject)
+        self.merge_button = self.button(row, self.ui('gh_merge'), self.confirm_merge)
+        self.copy_button = self.button(row, self.ui('gh_review_copy'), self.copy_status)
+        row.addStretch(1); self.close_button = self.button(row, self.ui('gh_close'), self.reject)
         layout.addLayout(row)
         self.repo.textChanged.connect(self.clear_selection)
         self.prs.currentTextChanged.connect(self.invalidate)
         self.update_controls()
+
+    def ui(self, key):
+        return tr(key, self.language)
 
     @staticmethod
     def button(row, text, callback):
@@ -77,7 +82,7 @@ class GitHubDialog(QDialog):
 
     def start(self, operation, fn):
         if self.busy: return
-        self.busy = True; self.update_controls(); self.notice.setText('Working…')
+        self.busy = True; self.update_controls(); self.notice.setText(self.ui('gh_working'))
         def work():
             try: result, error = fn(), ''
             except MergeUnknown: result, error = None, 'unknown'
@@ -87,7 +92,7 @@ class GitHubDialog(QDialog):
         try:
             threading.Thread(target=work, daemon=True).start()
         except RuntimeError:
-            self.busy = False; self.update_controls(); self.notice.setText('Could not start worker.')
+            self.busy = False; self.update_controls(); self.notice.setText(self.ui('gh_worker_failed'))
 
     def detect_repo(self):
         if self.busy: return
@@ -103,21 +108,21 @@ class GitHubDialog(QDialog):
         repo = self.repo.text().strip()
         value = self.prs.currentText().split(' — ', 1)[0].strip()
         if not value.isascii() or not value.isdecimal() or len(value) > 10 or int(value) < 1:
-            self.notice.setText('Enter a positive pull request number.'); return
+            self.notice.setText(self.ui('gh_invalid_number')); return
         number = int(value)
         self.invalidate(); self.start('inspect', lambda: GitHubClient(repo).inspect(number))
 
     def render(self):
         pr = self.snapshot
         lines = [f'{pr.repo} · PR #{pr.number}', pr.title, f'{pr.head} → {pr.base}',
-                 'Head SHA: ' + pr.head_sha, 'Base SHA: ' + pr.base_sha, 'State at inspection: ' + pr.state,
-                 'Observed UTC: ' + self.observed, '', 'Checks:']
+                 'Head SHA: ' + pr.head_sha, 'Base SHA: ' + pr.base_sha, self.ui('gh_state') + pr.state,
+                 self.ui('gh_observed') + self.observed, '', self.ui('gh_checks')]
         lines += [f'  {c.state:<16} {c.name}' for c in pr.checks]
-        lines += ['', 'Readiness at inspection: ' + ('READY (server rules still apply)' if pr.ready else 'BLOCKED')]
+        lines += ['', self.ui('gh_readiness') + (self.ui('gh_readiness_yes') if pr.ready else self.ui('gh_readiness_no'))]
         lines += list(pr.blockers)
         if self.outcome != 'observed':
-            lines += ['', 'Merge outcome: ' + self.outcome]
-        if self.merge_sha: lines += ['Verified merge SHA: ' + self.merge_sha]
+            lines += ['', self.ui('gh_outcome') + self.outcome]
+        if self.merge_sha: lines += [self.ui('gh_verified_sha') + self.merge_sha]
         self.detail.setPlainText('\n'.join(lines))
 
     def finished_work(self, operation, result, error):
@@ -127,30 +132,32 @@ class GitHubDialog(QDialog):
                 # Any error disables another write until a fresh explicit inspection.
                 self.outcome = 'unknown' if error == 'unknown' else 'not_verified'
                 self.render()
-                self.notice.setText('Merge not verified. Refresh the PR before any further action. No retry or branch deletion was attempted.')
+                self.notice.setText(self.ui('gh_merge_unverified'))
             else:
                 self.notice.setText(error)
         elif operation == 'origin':
-            self.repo.setText(result); self.notice.setText('Repository detected. Refresh open PRs or enter a PR number.')
+            self.repo.setText(result); self.notice.setText(self.ui('gh_origin_detected'))
         elif operation == 'list':
             for number, title in result: self.prs.addItem(f'{number} — {title}')
-            self.notice.setText(f'{len(result)} open PRs loaded.' + (' List limited to 100; enter a PR number to inspect another.' if len(result) == 100 else ' Select and inspect a PR.'))
+            self.notice.setText(self.ui('gh_list_count').format(count=len(result)) + (self.ui('gh_list_limit') if len(result) == 100 else self.ui('gh_list_select')))
         elif operation == 'inspect':
             self.snapshot = result; self.observed = datetime.datetime.now(datetime.timezone.utc).isoformat()
-            self.render(); self.notice.setText('Review the snapshot. GitHub server policies remain authoritative.')
+            self.render(); self.notice.setText(self.ui('gh_snapshot'))
         elif operation == 'merge':
             self.merge_sha = result; self.outcome = 'verified_merged'; self.render()
-            self.notice.setText('Merge verified. Remote branch cleanup is left to GitHub automatic deletion settings or manual review. No local checkout or deletion.')
+            self.notice.setText(self.ui('gh_merge_verified'))
         self.update_controls()
 
     def confirm_merge(self):
         pr = self.snapshot
         if self.busy or pr is None or not pr.ready or self.outcome != 'observed': return
-        box = QMessageBox(QMessageBox.Icon.Warning, 'Confirm squash merge',
-            f'{pr.repo} · PR #{pr.number}\n{pr.title}\n\n{pr.head} → {pr.base}\nHead SHA: {pr.head_sha}\nBase SHA: {pr.base_sha}\n\nThis writes to GitHub. The reviewed snapshot will be revalidated. No admin bypass or branch deletion.',
+        box = QMessageBox(QMessageBox.Icon.Warning, self.ui('gh_confirm_title'),
+            self.ui('gh_confirm_body').format(repo=pr.repo, number=pr.number, title=pr.title,
+                head=pr.head, base=pr.base, head_sha=pr.head_sha, base_sha=pr.base_sha),
             QMessageBox.StandardButton.Cancel, self)
         box.setTextFormat(Qt.TextFormat.PlainText)
-        confirm = box.addButton('Squash and merge', QMessageBox.ButtonRole.AcceptRole)
+        box.button(QMessageBox.StandardButton.Cancel).setText(self.ui('gh_cancel'))
+        confirm = box.addButton(self.ui('gh_confirm_action'), QMessageBox.ButtonRole.AcceptRole)
         box.setDefaultButton(QMessageBox.StandardButton.Cancel); box.setEscapeButton(QMessageBox.StandardButton.Cancel)
         box.exec()
         if box.clickedButton() is confirm and self.snapshot is pr and not self.busy:
@@ -162,12 +169,12 @@ class GitHubDialog(QDialog):
             packet = status_packet(self.snapshot, self.observed, merge_sha=self.merge_sha, outcome=self.outcome)
             text = json.dumps(packet, ensure_ascii=False, indent=2, allow_nan=False)
         except Exception:
-            self.notice.setText('Could not prepare protected export; nothing copied.'); return
-        dialog = QDialog(self); dialog.setWindowTitle('Review GitHub status JSON'); dialog.resize(760, 530)
-        layout = QVBoxLayout(dialog); layout.addWidget(QLabel('Best-effort masking only. Review before copying or sharing.'))
+            self.notice.setText(self.ui('gh_export_failed')); return
+        dialog = QDialog(self); dialog.setWindowTitle(self.ui('gh_review_json')); dialog.resize(760, 530)
+        layout = QVBoxLayout(dialog); layout.addWidget(QLabel(self.ui('gh_mask_warning')))
         preview = QPlainTextEdit(text); preview.setReadOnly(True); layout.addWidget(preview, 1)
-        row = QHBoxLayout(); self.button(row, 'Copy JSON', lambda: QApplication.clipboard().setText(text))
-        row.addStretch(); self.button(row, 'Close', dialog.reject); layout.addLayout(row); dialog.exec()
+        row = QHBoxLayout(); self.button(row, self.ui('gh_copy_json'), lambda: QApplication.clipboard().setText(text))
+        row.addStretch(); self.button(row, self.ui('gh_close'), dialog.reject); layout.addLayout(row); dialog.exec()
 
     def reject(self):
         if not self.busy: super().reject()

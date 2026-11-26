@@ -82,7 +82,8 @@ class WorkflowTests(unittest.TestCase):
         names={'warm_done','copy_report'}
         code=ast.Module(body=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in names],type_ignores=[])
         ns={};exec(compile(code,'relay_qt.py','exec'),ns)
-        self.app=SimpleNamespace(current=pathlib.Path('report.txt'),running=False,copy_busy=False,warm_path=None,warm_result=None,warm_waiting=False,detail=Mock(),error=Mock(),copy_done=Mock(),start_copy_worker=Mock())
+        from command_relay.relay_terms import tr
+        self.app=SimpleNamespace(ui=lambda key: tr(key, 'ru'),current=pathlib.Path('report.txt'),running=False,copy_busy=False,warm_path=None,warm_result=None,warm_waiting=False,detail=Mock(),error=Mock(),copy_done=Mock(),start_copy_worker=Mock())
         self.click=lambda mode='ai':ns['copy_report'](self.app,mode)
         self.done=lambda prepared,path=None:ns['warm_done'](self.app,path or self.app.current,prepared)
         self.prepared=SimpleNamespace(path=self.app.current,fresh=Mock(return_value=True),info=('ai','report.txt','PASS',0),text='protected')

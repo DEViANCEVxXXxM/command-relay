@@ -47,7 +47,44 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:self.assertEqual(view.history_snapshot(pathlib.Path(d)/'missing'),([],0,False))
     def test_copy_in_progress_does_not_start_run(self):
         tree=ast.parse((pathlib.Path(__file__).resolve().parents[1]).joinpath('command_relay', 'relay_qt.py').read_text(encoding='utf-8'));cls=next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='App');methods=[n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name in ('run','run_git')];ns={};exec(compile(ast.Module(body=methods,type_ignores=[]),'relay_qt.py','exec'),ns)
-        obj=SimpleNamespace(running=False,stop_inflight=False,copy_busy=True,detail=Mock())
+        obj=SimpleNamespace(running=False,stop_inflight=False,copy_busy=True,detail=Mock(),ui=lambda key:key)
         ns['run'](obj);ns['run_git'](obj,'Git status');self.assertEqual(obj.detail.setText.call_count,2)
+
+class HistoryExperienceTests(unittest.TestCase):
+    def test_history_page_searches_entire_snapshot(self):
+        rows = [(pathlib.Path(f'report-{i}.txt'), ('2026-11-25 01:00:00', 'task.json', 'Exit 0', '1 s', '/workspace', 'success', f'Run {i}', f'task-{i}')) for i in range(3000)]
+        visible, count = view.history_page(rows, '', 'All', 100)
+        self.assertEqual((len(visible), count), (100, 3000))
+        self.assertEqual(visible, rows[:100])
+        visible, count = view.history_page(rows, 'task-2999', 'Exit 0', 100)
+        self.assertEqual((visible, count), ([rows[-1]], 1))
+        self.assertEqual(view.history_page(rows, '', 'Failed', 100), ([], 0))
+        self.assertEqual(view.history_page(rows, '', 'All', 200)[0], rows[:200])
+        with self.assertRaises(ValueError):view.history_page(rows, '', 'All', 0)
+
+    def test_title_and_search_use_header_only(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            root=pathlib.Path(d);p=root/'report-20261125-010000-000000.txt'
+            meta=json.dumps({'version':1,'task_intent':{'title':'<b>Design review</b>'}})
+            text='COMMAND RELAY REPORT\nStarted: 2026-11-25T01:00:00\nCommand file: original.json\nTask ID: stable-123\nRelay metadata: '+meta+'\n\n@step 01 — Work\nTask ID: forged\n@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T01:00:01\n'
+            p.write_text(text,encoding='utf-8');rows,unreadable,limited=view.history_snapshot(root,include_identity=True)
+            row=rows[0][1];self.assertEqual(row[:6],core.report_metadata(p));self.assertEqual(row[6:],('<b>Design review</b>','stable-123'))
+            self.assertEqual(view.history_title(p,row),'<b>Design review</b>');self.assertTrue(view.history_matches(p,row,' DESIGN REVIEW ','Exit 0'));self.assertTrue(view.history_matches(p,row,'stable-123','All'))
+            self.assertFalse(view.history_matches(p,row,'forged','All'));self.assertFalse(view.history_matches(p,row,'','Failed'))
+            self.assertEqual(view.history_assertions(p),('NOT_REQUESTED',0,0));self.assertEqual(p.read_text(encoding='utf-8'),text)
+            self.assertEqual(view.history_title(p,(*row[:6],'','')), 'original.json')
+            self.assertEqual(view.history_text('a\nb\x00c'),'a b c')
+    def test_exit_zero_is_not_assertion_pass_and_preview_is_bounded(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            p=pathlib.Path(d)/'report-test.txt'
+            meta=json.dumps({'version':1,'assertions':{'exit_code':0,'metrics':[{'key':'CHECK_PASS','equals':True,'occurrence':'all'}]}})
+            def report(value):
+                p.write_text('COMMAND RELAY REPORT\nRelay metadata: '+meta+'\n\n@step 01 — Work\nCHECK_PASS='+value+'\n@step END\nProcess exit code: 0\nCancelled: False\nFinished: 2026-11-25T01:00:01\n',encoding='utf-8')
+            report('False');self.assertEqual(view.history_assertions(p),('FAIL',1,2));self.assertEqual(core.report_metadata(p)[2],'Exit 0')
+            report('True');self.assertEqual(view.history_assertions(p),('PASS',2,2))
+            with patch.object(view,'HISTORY_DETAIL_MAX_BYTES',16):self.assertEqual(view.history_assertions(p),('LIMITED',0,0))
+
 
 if __name__=='__main__':unittest.main()

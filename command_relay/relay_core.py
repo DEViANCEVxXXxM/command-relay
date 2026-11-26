@@ -156,9 +156,9 @@ def report_header_fields(text):
     return fields
 
 
-def report_metadata(path):
+def report_metadata(path, *, include_identity=False):
     with path.open('rb') as f:
-        head=f.read(8192).decode('utf-8-sig','replace')
+        head=f.read(65536 if include_identity else 8192).decode('utf-8-sig','replace')
         f.seek(max(0,os.fstat(f.fileno()).st_size-8192)); tail=f.read(8192).decode('utf-8','replace')
     fields=report_header_fields(head)
     start=fields.get('Started','');command=fields.get('Command file','');workspace=fields.get('Working directory','')
@@ -173,7 +173,12 @@ def report_metadata(path):
             if seconds>=0: duration=f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}'
         except (ValueError,TypeError): pass
     tag='success' if status=='Exit 0' else 'warning' if status in ('Cancelled','Partial','Unknown','Exit None') else 'error'
-    return (date,command,status,duration,workspace,tag)
+    row=(date,command,status,duration,workspace,tag)
+    if not include_identity:return row
+    from .relay_intelligence import report_meta
+    intent=report_meta(head).get('task_intent')
+    title=intent.get('title') if isinstance(intent,dict) else None
+    return row+(title if isinstance(title,str) else '',fields.get('Task ID',''))
 
 
 PACKET_LIMIT=1_000_000
