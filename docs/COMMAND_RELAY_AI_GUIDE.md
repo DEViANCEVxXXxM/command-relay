@@ -540,3 +540,7 @@ as a workflow convention, not as built-in Relay UI modes or new task fields.
   pending tasks and maintainer context in a separate private handoff. Include
   documentation changes in a suitable reviewed change rather than creating an
   unnecessary extra CI cycle, unless an independent documentation PR is needed.
+
+### Development preview: v4.4 localization foundation
+
+The post-v4.3.0 development branch introduces a startup language preference (`language` in local `settings.json`), initially English and Russian only. On first launch or an invalid/missing preference, the user explicitly chooses a language; the full corresponding section of the distributed disclaimer must still be accepted on every launch. Cancelling or declining does not save the selection. More → Settings → Startup language changes the preference for the next launch. The rest of the workbench is not yet translated. Do not localize task schemas, commands, paths, assertion keys or raw reports. This is unreleased development functionality, not a capability of the public v4.3.0 build.
