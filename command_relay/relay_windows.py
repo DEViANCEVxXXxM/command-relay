@@ -8,7 +8,7 @@ def colorref(rgb):
     return r | (g << 8) | (b << 16)
 
 
-def apply_neutral_chrome(hwnd):
+def apply_neutral_chrome(hwnd, theme="dark"):
     """Best effort on Windows 11. Unsupported attributes leave native defaults."""
     if sys.platform != 'win32' or not hwnd:
         return {}
@@ -18,8 +18,10 @@ def apply_neutral_chrome(hwnd):
         setter = ctypes.WinDLL('dwmapi').DwmSetWindowAttribute
         setter.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
         setter.restype = ctypes.c_long
-        values = ((20, 1), (34, colorref((51, 51, 51))),
-                  (35, colorref((32, 32, 32))), (36, colorref((220, 220, 220))))
+        light = theme == 'light'
+        values = ((20, int(not light)), (34, colorref((160, 172, 186) if light else (66, 73, 81))),
+                  (35, colorref((243, 245, 247) if light else (24, 26, 30))),
+                  (36, colorref((34, 43, 54) if light else (226, 229, 233))))
         result = {}
         for attr, value in values:
             data = wintypes.DWORD(value)

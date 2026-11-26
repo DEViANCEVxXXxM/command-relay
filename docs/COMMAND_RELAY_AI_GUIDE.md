@@ -543,4 +543,20 @@ as a workflow convention, not as built-in Relay UI modes or new task fields.
 
 ### Development preview: v4.4 localization foundation
 
-The post-v4.3.0 development branch introduces a startup language preference (`language` in local `settings.json`), initially English and Russian only. On first launch or an invalid/missing preference, the user explicitly chooses a language; the full corresponding section of the distributed disclaimer must still be accepted on every launch. Cancelling or declining does not save the selection. More → Settings → Startup language changes the preference for the next launch. The rest of the workbench is not yet translated. Do not localize task schemas, commands, paths, assertion keys or raw reports. This is unreleased development functionality, not a capability of the public v4.3.0 build.
+The post-v4.3.0 development branch introduces a startup language preference (`language` in local `settings.json`), initially English and Russian only. On first launch or an invalid/missing preference, the user explicitly chooses a language; the full corresponding section of the distributed disclaimer must still be accepted on every launch. Cancelling or declining does not save the selection. More → Settings → Startup language changes the preference for the next launch. The main workbench now has English/Russian labels, menus, primary actions and accessibility text. Safety settings, Updates, repeat-run, risky-command and stop confirmation text are also bilingual. Raw diagnostics, some other tools, status messages and platform-provided buttons may remain English. Other planned locales are registry entries only until full notice and catalog review. Do not localize task schemas, commands, paths, assertion keys or raw reports. This is unreleased development functionality, not a capability of the public v4.3.0 build.
+
+### Workspace modes (development foundation)
+
+After accepting the complete startup disclaimer, users without a valid mode preference choose Casual or Advanced. Both share the same editor, task inspector, output, execution and safety controls. Casual initially hides the sidebar and provides a shorter import/review/run/copy flow; the sidebar is still available under Settings. Advanced retains the full workbench. Settings → Workspace mode changes the presentation without executing or replacing a task. Each mode remembers its sidebar visibility. Mode previews are inert; Reduced motion disables selection animation. English/Russian startup, mode selection and primary workbench labels are available; full dialog translation is not yet implemented.
+
+### Appearance
+
+More → Settings → Light theme switches the shared Casual/Advanced workbench immediately. The default is dark; the choice is saved locally. The theme only changes presentation: commands, output, review and permissions remain unchanged. Reduced motion is independent.
+
+### Casual task card
+
+Casual shows a compact task title and the current Import / Review / Run / Result stage. Metadata is plain text; edits invalidate the loaded title and report stage. The Result stage means a report was saved, not that assertions passed. The actual editor, inspector, workspace, output and explicit Run remain visible; switching modes does not execute anything.
+
+### Editor responsiveness
+
+Command outline updates are coalesced after edits and deferred while the Steps sidebar is hidden. Stale outline navigation is disabled until rebuilt. File drag feedback is immediate and does not animate; only one local file is accepted, and drops are denied while the editor is read-only. Import still does not execute a task.

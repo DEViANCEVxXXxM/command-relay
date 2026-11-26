@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QTimer, Qt, QPoint, QCoreApplication, QEvent
+from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit, QPushButton, QMessageBox, QFileDialog
 from command_relay import relay_qt
 from command_relay.relay_version import VERSION
@@ -70,6 +71,82 @@ for selected, expected in [('ru', 'ru'), (None, None)]:
     assert choose_language() == expected
     assert not errors, errors
 print('Qt startup locale and disclaimer checks passed (English/Russian, select, cancel, accept, decline, close).')
+# Real chooser: cancellation, both modes, and reduced motion (no process/network).
+for mode, reduced in ((None, True), ('casual', False), ('advanced', True)):
+    errors = []
+    def select_mode():
+        dialog = QApplication.activeModalWidget()
+        try:
+            assert dialog.objectName() == 'workspace_mode_dialog'
+            from PySide6.QtWidgets import QRadioButton
+            if mode is None:
+                dialog.reject()
+            else:
+                dialog.findChild(QRadioButton, 'mode_'+mode).setChecked(True)
+                dialog.findChild(QPushButton, 'mode_continue').click()
+        except Exception as exc:
+            errors.append(exc)
+            if dialog is not None: dialog.reject()
+    QTimer.singleShot(0, select_mode)
+    assert relay_qt.choose_workspace_mode(language='ru', reduced_motion=reduced) == mode
+    assert not errors, errors
+print('Qt workspace mode chooser passed (both modes, cancellation, reduced motion).')
+# Localized workbench is constructed from a saved locale. Keep raw content intact.
+for mode in ('casual', 'advanced'):
+    with patch.object(relay_qt, 'read_settings', return_value={'language':'ru','mode':mode}), patch.object(relay_qt.App, 'start_initial_restore'):
+        localized = relay_qt.App()
+        localized.show(); settle_layout()
+        assert localized.ui_language == 'ru'
+        assert localized.more.text() == tr('more', 'ru')
+        assert localized.settings_menu.title() == tr('settings', 'ru')
+        assert localized.runbtn.text() == tr('run_short' if mode == 'casual' else 'run_commands', 'ru')
+        assert localized.editor.accessibleName() == tr('command_editor', 'ru')
+        assert localized.safety_action.isEnabled()
+        assert 'без маскирования' in localized.copy_raw_action.text()
+        raw = 'Write-Output "COMMANDS / READY"'
+        localized.editor.setPlainText(raw); localized.output.setPlainText(raw)
+        with patch.object(localized, 'start_process') as start:
+            localized.apply_mode('advanced' if mode == 'casual' else 'casual')
+            assert localized.editor.toPlainText() == raw and localized.output.toPlainText() == raw
+            start.assert_not_called()
+        # Verify Russian dialogs without any policy or network access.
+        import queue
+        safety = relay_qt.SafetyDialog(str(root), localized)
+        assert safety.windowTitle() == tr('safety_title', 'ru')
+        assert not safety.toggle.isEnabled() and not safety.update_toggle.isEnabled()
+        assert safety.toggle.text() == tr('safety_merge', 'ru')
+        safety.finish_policy(None, None, 'Local policy loaded. No changes made.')
+        assert safety.notice.text() == tr('safety_loaded', 'ru')
+        assert not safety.save_button.isEnabled() and not safety.update_save_button.isEnabled()
+        errors = []
+        def reject_permission():
+            dialog = QApplication.activeModalWidget()
+            try:
+                assert dialog.windowTitle() == tr('safety_confirm', 'ru')
+                assert dialog.defaultButton() is dialog.button(QMessageBox.StandardButton.Cancel)
+                assert dialog.defaultButton().text() == tr('confirm_cancel', 'ru')
+                assert 'owner/repo' in dialog.text()
+                dialog.defaultButton().click()
+            except Exception as exc:
+                errors.append(exc)
+                if dialog is not None: dialog.reject()
+        QTimer.singleShot(0, reject_permission)
+        assert not safety.confirm(tr('merge_allow', 'ru').format(workspace=str(root), repository='owner/repo'))
+        assert not errors, errors
+        updates_dialog = relay_qt.UpdatesDialog(localized)
+        assert updates_dialog.windowTitle() == tr('update_title', 'ru')
+        assert updates_dialog.trust.text() == tr('update_unverified', 'ru')
+        assert not updates_dialog.verify_button.isEnabled() and not updates_dialog.prepare_button.isEnabled()
+        updates_dialog.results = queue.Queue()
+        updates_dialog.results.put(('check', None, 'Release check failed. Retry later.', 'Publisher signature: Not verified', None))
+        updates_dialog.finish_check()
+        assert updates_dialog.status.text() == tr('update_check_failed', 'ru')
+        assert updates_dialog.trust.text() == tr('update_unverified', 'ru')
+        assert not updates_dialog.prepare_button.isEnabled()
+        safety.deleteLater(); updates_dialog.deleteLater()
+        localized.initial_restore_pending = False
+        localized.deleteLater(); settle_layout()
+print('Qt localized workbench and dialog checks passed (Russian labels, both modes, raw content, default-deny permission and unverified update).')
 # Disable local restoration; no reports or commands are opened/executed.
 with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(relay_qt.App, 'start_initial_restore'):
     window = relay_qt.App()
@@ -94,13 +171,56 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         assert copy.call_count == 3
         start.assert_not_called()
     print('Qt workbench accessibility checks passed (named controls and explicit copy modes; no commands executed).')
+    # A hidden outline consumes no scan timer; stale navigation cannot jump.
+    window.tabs.setCurrentIndex(0)
+    window.set_sidebar_visible(True)
+    window.editor.setPlainText('@step First\nWrite-Output 1\n@step Second')
+    assert window.outline_dirty and window.outline_timer.isActive() and not window.outline.isEnabled()
+    window.refresh_outline()
+    assert window.outline.count()==2 and window.outline.isEnabled() and not window.outline_timer.isActive()
+    assert window.outline.item(1).data(Qt.ItemDataRole.UserRole)==2
+    window.set_sidebar_visible(False)
+    window.editor.setPlainText('\n@step New')
+    assert window.outline_dirty and not window.outline_timer.isActive()
+    window.refresh_outline(); assert window.outline.count()==2
+    window.set_sidebar_visible(True); assert window.outline_timer.isActive()
+    window.refresh_outline()
+    assert window.outline.count()==1 and window.outline.item(0).data(Qt.ItemDataRole.UserRole)==1
+    window.jump(window.editor,window.outline.item(0)); assert window.editor.textCursor().blockNumber()==1
+    window.editor.clear(); window.refresh_outline()
+    # Valid file drag is highlighted; remote/multiple/read-only drops are rejected.
+    from PySide6.QtCore import QMimeData, QUrl, QPointF
+    from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
+    def drag(mime):
+        return QDragEnterEvent(QPoint(2,2),Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+    mime=QMimeData(); mime.setUrls([QUrl.fromLocalFile(str(root/'sample.json'))])
+    event=drag(mime); window.editor.dragEnterEvent(event)
+    assert event.isAccepted() and window.editor.property('fileDropActive') is True
+    window.editor.dragLeaveEvent(QDragLeaveEvent()); assert not window.editor.property('fileDropActive')
+    for urls in ([QUrl('https://example.invalid/task.json')],[QUrl.fromLocalFile('a'),QUrl.fromLocalFile('b')]):
+        bad=QMimeData(); bad.setUrls(urls); event=drag(bad); window.editor.dragEnterEvent(event)
+        assert not event.isAccepted() and not window.editor.property('fileDropActive')
+    with patch.object(window,'start_process') as start:
+        dropped=Mock(); window.editor.fileDropped.connect(dropped)
+        # Disconnect the actual load slot for the synthetic event only.
+        window.editor.fileDropped.disconnect(window.load)
+        try:
+            def drop():
+                return QDropEvent(QPointF(2,2),Qt.DropAction.CopyAction,mime,Qt.MouseButton.LeftButton,Qt.KeyboardModifier.NoModifier)
+            event=drop();window.editor.dropEvent(event);assert event.isAccepted();dropped.assert_called_once()
+            window.editor.setReadOnly(True)
+            event=drop();window.editor.dropEvent(event);assert not event.isAccepted();dropped.assert_called_once()
+            window.editor.setReadOnly(False);start.assert_not_called()
+        finally:
+            window.editor.fileDropped.disconnect(dropped); window.editor.fileDropped.connect(window.load)
+    print('Qt editor responsiveness checks passed (coalesced outline, hidden sidebar, current offsets, drag feedback, read-only denial).')
     # Settings navigation shares existing controls; no policy mutation or network work.
     assert window.settings_menu.objectName() == 'workbench_settings'
     assert window.settings_menu.menuAction() in window.more.menu().actions()
     assert window.safety_action in window.settings_menu.actions()
     assert window.safety_action not in window.more.menu().actions()
     actions = {a.objectName(): a for a in window.settings_menu.actions() if a.objectName()}
-    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_language', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
+    assert set(actions) == {'settings_safety', 'settings_updates', 'settings_language', 'settings_mode', 'settings_light_theme', 'settings_reduced_motion', 'settings_sidebar', 'settings_wrap', 'settings_dense'}
     assert actions['settings_safety'].isEnabled()
     with patch.object(relay_qt, 'choose_language', return_value=None), patch.object(relay_qt, 'atomic_text') as save:
         actions['settings_language'].trigger()
@@ -109,6 +229,7 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
         actions['settings_language'].trigger()
         assert json.loads(save.call_args.args[1])['language'] == 'ru'
         assert window.settings['language'] == 'ru'
+        assert window.ui_language == 'en' and window.more.text() == 'More'
     window.settings.pop('language', None)
     for name, control in [('settings_wrap', window.wrap), ('settings_dense', window.dense)]:
         action = actions[name]
@@ -119,6 +240,81 @@ with patch.object(relay_qt, 'read_settings', return_value={}), patch.object(rela
     initial = window.sidebar_action.isChecked()
     window.sidebar_action.trigger(); assert window.tabs.isHidden() == initial
     window.sidebar_action.trigger(); assert window.sidebar_action.isChecked() == initial
+    # Switch through Settings, keeping the editor, task inspector, output and safety intact.
+    editor, output, inspector = window.editor, window.output, window.inspector_label
+    editor.setPlainText('Write-Output test'); output.setPlainText('Existing output')
+    with patch.object(relay_qt, 'choose_workspace_mode', return_value=None), patch.object(relay_qt, 'atomic_text') as save:
+        actions['settings_mode'].trigger(); save.assert_not_called()
+    with patch.object(relay_qt, 'choose_workspace_mode', return_value='casual'), patch.object(relay_qt, 'atomic_text') as save, patch.object(window, 'start_process') as start:
+        actions['settings_mode'].trigger(); assert json.loads(save.call_args.args[1])['mode'] == 'casual'
+        assert window.mode == 'casual' and window.tabs.isHidden() and window.casual_hint.isVisible()
+        assert window.editor is editor and window.output is output and window.inspector_label is inspector
+        assert editor.isVisible() and output.isVisible() and window.safety_action.isEnabled()
+        assert editor.toPlainText() == 'Write-Output test' and output.toPlainText() == 'Existing output'
+        assert window.runbtn.isEnabled(); start.assert_not_called()
+    # The Casual card tracks actual state; it is not a separate executor.
+    assert window.casual_title.text() == tr('casual_edited')
+    assert tr('casual_review') in window.casual_hint.accessibleName()
+    with patch.object(window, 'start_process') as start:
+        window.set_busy(True)
+        assert tr('casual_run') in window.casual_hint.accessibleName()
+        window.casual_report_ready=True
+        window.set_busy(False)
+        assert tr('casual_result') in window.casual_hint.accessibleName()
+        assert 'not a test verdict' in window.casual_help.text()
+        editor.setPlainText('Write-Output changed')
+        assert tr('casual_review') in window.casual_hint.accessibleName()
+        editor.setPlainText('Write-Output test')
+        start.assert_not_called()
+    print('Qt Casual workflow card checks passed (review, running, report, invalidation).')
+    window.sidebar_action.trigger(); assert not window.tabs.isHidden()
+    window.sidebar_action.trigger(); assert window.tabs.isHidden()
+    with patch.object(relay_qt, 'choose_workspace_mode', return_value='advanced'), patch.object(relay_qt, 'atomic_text'):
+        actions['settings_mode'].trigger()
+        assert window.mode == 'advanced' and not window.tabs.isHidden() and window.casual_hint.isHidden()
+    # Theme changes do not rebuild widgets, trigger execution or rewrite raw text.
+    theme = actions['settings_light_theme']
+    assert relay_qt.current_theme() == 'dark' and not theme.isChecked()
+    with patch.object(relay_qt, 'atomic_text') as save, patch.object(window, 'start_process') as start:
+        theme.trigger(); settle_layout()
+        assert relay_qt.current_theme() == 'light' and window.settings['theme'] == 'light'
+        assert json.loads(save.call_args.args[1])['theme'] == 'light'
+        assert window.editor is editor and window.output is output and window.inspector_label is inspector
+        assert editor.toPlainText() == 'Write-Output test' and output.toPlainText() == 'Existing output'
+        assert window.runbtn.isEnabled() and window.safety_action.isEnabled()
+        assert window.editor_highlight.tokens == relay_qt.colors()
+        assert not window.activity._timer.isActive()
+        assert window.editor.palette().color(QPalette.ColorRole.Base).name() == relay_qt.colors()['surface']
+        theme.trigger(); settle_layout()
+        assert relay_qt.current_theme() == 'dark' and not theme.isChecked()
+        start.assert_not_called()
+    with patch.object(relay_qt, 'atomic_text', side_effect=OSError('mock write denied')), patch.object(window, 'error') as error:
+        theme.trigger(); assert not theme.isChecked() and relay_qt.current_theme() == 'dark'
+        error.assert_called_once()
+    print('Qt theme checks passed (live switch, persistence, denied write, state and safety).')
+    editor.clear(); output.clear()
+    print('Qt shared workspace mode checks passed (state, safety, independent sidebar, settings).')
+    # Activity and output timers are idle when no commands are running.
+    assert not window.timer.isActive() and not window.clock.isActive()
+    motion = actions['settings_reduced_motion']
+    assert not motion.isChecked() and not window.activity._timer.isActive()
+    window.set_busy(True)
+    assert window.timer.isActive() and window.clock.isActive()
+    assert window.activity._timer.isActive()
+    motion.trigger()
+    assert window.settings['reduced_motion'] is True and window.activity.isVisible()
+    assert not window.activity._timer.isActive()
+    motion.trigger()
+    assert window.activity._timer.isActive()
+    window.hide(); app.processEvents()
+    assert not window.activity._timer.isActive()
+    window.show(); app.processEvents()
+    assert window.activity._timer.isActive()
+    window.set_busy(False)
+    assert not window.timer.isActive() and not window.clock.isActive()
+    assert not window.activity._timer.isActive() and window.activity.isHidden()
+    window.set_status('ready', 'READY')
+    print('Qt idle timer and reduced motion checks passed (no commands executed).')
     print('Qt settings navigation checks passed (shared preferences and compact menu).')
     from command_relay import relay_updates as updates
     import time
